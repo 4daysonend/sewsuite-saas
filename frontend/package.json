@@ -1,0 +1,61 @@
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@auth0/auth0-react": "^2.2.4",
+    "@heroicons/react": "^2.2.0",
+    "@nestjs/config": "^3.3.0",
+    "@nestjs/jwt": "^10.2.0",
+    "@nestjs/mongoose": "^10.1.0",
+    "@nestjs/passport": "^10.0.3",
+    "@nestjs/platform-socket.io": "^10.4.15",
+    "@nestjs/typeorm": "^10.0.2",
+    "@nestjs/websockets": "^10.4.15",
+    "@tailwindcss/forms": "^0.5.9",
+    "@types/passport-google-oauth20": "^2.0.16",
+    "@types/socket.io": "^3.0.1",
+    "axios": "^1.7.9",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "cra-template-typescript": "1.2.0",
+    "date-fns": "^4.1.0",
+    "ioredis": "^5.4.2",
+    "mongoose": "^8.9.3",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
+    "passport-jwt": "^4.0.1",
+    "pg": "^8.13.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^7.1.1",
+    "react-scripts": "^3.0.1",
+    "redis": "^4.7.0",
+    "socket.io-client": "^4.8.1",
+    "typeorm": "^0.3.20"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}
