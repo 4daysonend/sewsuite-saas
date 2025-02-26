@@ -1,3 +1,4 @@
+// /backend/src/payments/__tests__/payments.service.spec.ts
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -6,7 +7,6 @@ import { PaymentsService } from '../payments.service';
 import { Payment, PaymentStatus } from '../entities/payment.entity';
 import { OrdersService } from '../../orders/orders.service';
 import { EmailService } from '../../email/email.service';
-import { createMock } from '@golevelup/ts-jest';
 
 describe('PaymentsService', () => {
   let service: PaymentsService;
@@ -29,15 +29,26 @@ describe('PaymentsService', () => {
         PaymentsService,
         {
           provide: getRepositoryToken(Payment),
-          useValue: createMock<Repository<Payment>>(),
+          useValue: {
+            create: jest.fn(),
+            save: jest.fn(),
+            findOne: jest.fn(),
+            find: jest.fn(),
+          },
         },
         {
           provide: OrdersService,
-          useValue: createMock<OrdersService>(),
+          useValue: {
+            findOne: jest.fn().mockResolvedValue(mockOrder),
+            updateStatus: jest.fn(),
+          },
         },
         {
           provide: EmailService,
-          useValue: createMock<EmailService>(),
+          useValue: {
+            sendOrderPaymentConfirmation: jest.fn(),
+            sendOrderPaymentFailedNotification: jest.fn(),
+          },
         },
         {
           provide: ConfigService,
@@ -52,17 +63,18 @@ describe('PaymentsService', () => {
     }).compile();
 
     service = module.get<PaymentsService>(PaymentsService);
-    paymentRepository = module.get<Repository<Payment>>(
-      getRepositoryToken(Payment),
-    );
+    paymentRepository = module.get<Repository<Payment>>(getRepositoryToken(Payment));
     ordersService = module.get<OrdersService>(OrdersService);
     emailService = module.get<EmailService>(EmailService);
     configService = module.get<ConfigService>(ConfigService);
   });
 
+  it('should be defined', () => {
+    expect(service).toBeDefined();
+  });
+
   describe('createPaymentIntent', () => {
     it('should create a payment intent successfully', async () => {
-      // Arrange
       const orderId = '123';
       const mockPaymentIntent = {
         id: 'pi_123',
@@ -70,7 +82,7 @@ describe('PaymentsService', () => {
         status: 'requires_payment_method',
       };
 
-      jest.spyOn(ordersService, 'findById').mockResolvedValue(mockOrder);
+      jest.spyOn(ordersService, 'findOne').mockResolvedValue(mockOrder);
       jest.spyOn(paymentRepository, 'save').mockResolvedValue({
         id: '1',
         stripePaymentIntentId: mockPaymentIntent.id,
@@ -79,41 +91,48 @@ describe('PaymentsService', () => {
         order: mockOrder,
       } as Payment);
 
-      // Act
+      // Mock Stripe API
+      (service as any).stripe = {
+        paymentIntents: {
+          create: jest.fn().mockResolvedValue(mockPaymentIntent),
+        },
+      };
+
       const result = await service.createPaymentIntent(orderId);
 
-      // Assert
       expect(result.clientSecret).toBeDefined();
       expect(paymentRepository.save).toHaveBeenCalled();
     });
 
     it('should handle errors when creating payment intent', async () => {
-      // Arrange
       const orderId = '123';
-      jest
-        .spyOn(ordersService, 'findById')
-        .mockRejectedValue(new Error('Order not found'));
+      jest.spyOn(ordersService, 'findOne').mockRejectedValue(new Error('Order not found'));
 
-      // Act & Assert
       await expect(service.createPaymentIntent(orderId)).rejects.toThrow();
     });
   });
 
   describe('handleWebhook', () => {
     it('should process payment_intent.succeeded webhook', async () => {
-      // Arrange
       const mockPayment = {
         id: '1',
         stripePaymentIntentId: 'pi_123',
         status: PaymentStatus.PENDING,
         order: mockOrder,
+      } as Payment;
+
+      jest.spyOn(paymentRepository, 'findOne').mockResolvedValue(mockPayment);
+      
+      // Mock Stripe webhook construction
+      (service as any).stripe = {
+        webhooks: {
+          constructEvent: jest.fn().mockReturnValue({
+            type: 'payment_intent.succeeded',
+            data: { object: { id: 'pi_123' } },
+          }),
+        },
       };
 
-      jest
-        .spyOn(paymentRepository, 'findOne')
-        .mockResolvedValue(mockPayment as Payment);
-
-      // Act
       await service.handleWebhook(
         'signature',
         Buffer.from(
@@ -124,11 +143,90 @@ describe('PaymentsService', () => {
         ),
       );
 
-      // Assert
       expect(paymentRepository.save).toHaveBeenCalledWith(
         expect.objectContaining({ status: PaymentStatus.COMPLETED }),
       );
-      expect(emailService.sendPaymentConfirmation).toHaveBeenCalled();
+      expect(emailService.sendOrderPaymentConfirmation).toHaveBeenCalled();
+    });
+
+    it('should handle payment_intent.payment_failed webhook', async () => {
+      const mockPayment = {
+        id: '1',
+        stripePaymentIntentId: 'pi_123',
+        status: PaymentStatus.PENDING,
+        order: mockOrder,
+      } as Payment;
+
+      jest.spyOn(paymentRepository, 'findOne').mockResolvedValue(mockPayment);
+      
+      // Mock Stripe webhook construction
+      (service as any).stripe = {
+        webhooks: {
+          constructEvent: jest.fn().mockReturnValue({
+            type: 'payment_intent.payment_failed',
+            data: { object: { id: 'pi_123' } },
+          }),
+        },
+      };
+
+      await service.handleWebhook(
+        'signature',
+        Buffer.from(
+          JSON.stringify({
+            type: 'payment_intent.payment_failed',
+            data: { object: { id: 'pi_123' } },
+          }),
+        ),
+      );
+
+      expect(paymentRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: PaymentStatus.FAILED }),
+      );
+      expect(emailService.sendOrderPaymentFailedNotification).toHaveBeenCalled();
+    });
+  });
+
+  // Error handling tests
+  describe('error handling', () => {
+    it('should handle invalid webhook signatures', async () => {
+      // Mock Stripe webhook construction failure
+      (service as any).stripe = {
+        webhooks: {
+          constructEvent: jest.fn().mockImplementation(() => {
+            throw new Error('Invalid signature');
+          }),
+        },
+      };
+
+      await expect(
+        service.handleWebhook('invalid_signature', Buffer.from('{}'))
+      ).rejects.toThrow();
+    });
+
+    it('should handle missing payment records', async () => {
+      jest.spyOn(paymentRepository, 'findOne').mockResolvedValue(null);
+      
+      // Mock Stripe webhook construction
+      (service as any).stripe = {
+        webhooks: {
+          constructEvent: jest.fn().mockReturnValue({
+            type: 'payment_intent.succeeded',
+            data: { object: { id: 'pi_123' } },
+          }),
+        },
+      };
+
+      await expect(
+        service.handleWebhook(
+          'signature',
+          Buffer.from(
+            JSON.stringify({
+              type: 'payment_intent.succeeded',
+              data: { object: { id: 'pi_123' } },
+            }),
+          ),
+        ),
+      ).rejects.toThrow();
     });
   });
 });

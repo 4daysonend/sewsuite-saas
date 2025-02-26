@@ -22,7 +22,7 @@ export class RecoveryService {
 
   async handleSystemDegradation(
     healthStatus: any,
-    autoRecover: boolean = true,
+    autoRecover = true,
   ): Promise<{
     success: boolean;
     actions: string[];

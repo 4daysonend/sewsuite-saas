@@ -315,7 +315,7 @@ export class HealthService {
     await this.redis.zremrangebyrank('health:checks', 0, -1001);
   }
 
-  async getHealthHistory(limit: number = 100): Promise<
+  async getHealthHistory(limit = 100): Promise<
     Array<{
       status: string;
       details: Record<string, any>;

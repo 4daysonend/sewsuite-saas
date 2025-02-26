@@ -1,3 +1,4 @@
+// /backend/src/orders/orders.module.ts
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrdersController } from './controllers/orders.controller';
@@ -14,10 +15,10 @@ import { UsersModule } from '../users/users.module';
     TypeOrmModule.forFeature([OrderRepository]),
     PaymentsModule,
     EmailModule,
-    UsersModule
+    UsersModule,
   ],
   controllers: [OrdersController, OrderAnalyticsController],
   providers: [OrdersService, OrderAnalyticsService],
-  exports: [OrdersService, OrderAnalyticsService]
+  exports: [OrdersService, OrderAnalyticsService],
 })
 export class OrdersModule {}

@@ -15,14 +15,14 @@ export class EmailService {
   constructor(
     private readonly configService: ConfigService,
     private readonly templateService: TemplateService,
-    @InjectQueue('email') private readonly emailQueue: Queue
+    @InjectQueue('email') private readonly emailQueue: Queue,
   ) {
     this.transporter = nodemailer.createTransport({
       service: this.configService.get('EMAIL_SERVICE'),
       auth: {
         user: this.configService.get('EMAIL_USER'),
-        pass: this.configService.get('EMAIL_PASSWORD')
-      }
+        pass: this.configService.get('EMAIL_PASSWORD'),
+      },
     });
   }
 
@@ -32,9 +32,9 @@ export class EmailService {
         attempts: 3,
         backoff: {
           type: 'exponential',
-          delay: 5000
+          delay: 5000,
         },
-        removeOnComplete: true
+        removeOnComplete: true,
       });
     } catch (error) {
       this.logger.error(`Failed to queue email: ${error.message}`);
@@ -50,23 +50,23 @@ export class EmailService {
       totalAmount: number;
       tailorName: string;
       orderDetails: any;
-    }
+    },
   ): Promise<void> {
     const { html, text } = await this.templateService.renderTemplate(
       'orderCreation',
       {
         clientName: `${user.firstName} ${user.lastName}`,
         ...orderData,
-        orderUrl: `${this.configService.get('FRONTEND_URL')}/orders/${orderData.orderId}`
+        orderUrl: `${this.configService.get('FRONTEND_URL')}/orders/${orderData.orderId}`,
       },
-      user.locale
+      user.locale,
     );
 
     await this.queueEmail({
       to: user.email,
       subject: 'Order Confirmation',
       html,
-      text
+      text,
     });
   }
 
@@ -77,23 +77,23 @@ export class EmailService {
       oldStatus: string;
       newStatus: string;
       notes?: string;
-    }
+    },
   ): Promise<void> {
     const { html, text } = await this.templateService.renderTemplate(
       'orderStatusUpdate',
       {
         clientName: `${user.firstName} ${user.lastName}`,
         ...updateData,
-        orderUrl: `${this.configService.get('FRONTEND_URL')}/orders/${updateData.orderId}`
+        orderUrl: `${this.configService.get('FRONTEND_URL')}/orders/${updateData.orderId}`,
       },
-      user.locale
+      user.locale,
     );
 
     await this.queueEmail({
       to: user.email,
       subject: `Order Status Update: ${updateData.newStatus}`,
       html,
-      text
+      text,
     });
   }
 
@@ -104,23 +104,23 @@ export class EmailService {
       fittingDate: Date;
       location: string;
       notes?: string;
-    }
+    },
   ): Promise<void> {
     const { html, text } = await this.templateService.renderTemplate(
       'fittingReminder',
       {
         clientName: `${user.firstName} ${user.lastName}`,
         ...fittingData,
-        calendarUrl: this.generateCalendarUrl(fittingData)
+        calendarUrl: this.generateCalendarUrl(fittingData),
       },
-      user.locale
+      user.locale,
     );
 
     await this.queueEmail({
       to: user.email,
       subject: 'Upcoming Fitting Appointment Reminder',
       html,
-      text
+      text,
     });
   }
 
@@ -132,23 +132,23 @@ export class EmailService {
       amount: number;
       transactionId: string;
       paymentDate: Date;
-    }
+    },
   ): Promise<void> {
     const { html, text } = await this.templateService.renderTemplate(
       'paymentConfirmation',
       {
         clientName: `${user.firstName} ${user.lastName}`,
         ...paymentData,
-        orderUrl: `${this.configService.get('FRONTEND_URL')}/orders/${paymentData.orderId}`
+        orderUrl: `${this.configService.get('FRONTEND_URL')}/orders/${paymentData.orderId}`,
       },
-      user.locale
+      user.locale,
     );
 
     await this.queueEmail({
       to: user.email,
       subject: 'Payment Confirmation',
       html,
-      text
+      text,
     });
   }
 
@@ -158,16 +158,16 @@ export class EmailService {
       orderId: string;
       amount: number;
       failureReason: string;
-    }
+    },
   ): Promise<void> {
     const { html, text } = await this.templateService.renderTemplate(
       'paymentFailed',
       {
         clientName: `${user.firstName} ${user.lastName}`,
         ...paymentData,
-        paymentUrl: `${this.configService.get('FRONTEND_URL')}/orders/${paymentData.orderId}/payment`
+        paymentUrl: `${this.configService.get('FRONTEND_URL')}/orders/${paymentData.orderId}/payment`,
       },
-      user.locale
+      user.locale,
     );
 
     await this.queueEmail({
@@ -175,7 +175,7 @@ export class EmailService {
       subject: 'Payment Failed',
       html,
       text,
-      priority: 'high'
+      priority: 'high',
     });
   }
 
@@ -187,23 +187,23 @@ export class EmailService {
       fileName: string;
       fileType: string;
       orderId?: string;
-    }
+    },
   ): Promise<void> {
     const { html, text } = await this.templateService.renderTemplate(
       'fileUploadConfirmation',
       {
         clientName: `${user.firstName} ${user.lastName}`,
         ...fileData,
-        fileUrl: `${this.configService.get('FRONTEND_URL')}/files/${fileData.fileId}`
+        fileUrl: `${this.configService.get('FRONTEND_URL')}/files/${fileData.fileId}`,
       },
-      user.locale
+      user.locale,
     );
 
     await this.queueEmail({
       to: user.email,
       subject: 'File Upload Confirmation',
       html,
-      text
+      text,
     });
   }
 
@@ -217,11 +217,11 @@ export class EmailService {
       text: 'Fitting Appointment - Tailor Platform',
       dates: fittingData.fittingDate.toISOString(),
       location: fittingData.location,
-      details: fittingData.notes || 'Fitting appointment for your order'
+      details: fittingData.notes || 'Fitting appointment for your order',
     };
 
     return `${this.configService.get('FRONTEND_URL')}/calendar/add?${new URLSearchParams(
-      event as any
+      event as any,
     ).toString()}`;
   }
 }

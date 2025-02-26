@@ -3,77 +3,154 @@ import {
   Get,
   Post,
   Put,
+  Patch,
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
+  ParseUUIDPipe,
+  HttpStatus,
+  HttpCode,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
-import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRoleGuard } from './guards/user-role.guard';
+import { Roles } from '../common/decorators/roles.decorator';
 import { UsersService } from './users.service';
-import { CreateUserDto } from './dto/create-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
-import { User } from './entities/user.entity';
+import { UserProfileService } from './services/user-profile.service';
+import { UserRole } from './entities/user.entity';
+import {
+  CreateUserDto,
+  UpdateUserDto,
+  UpdatePasswordDto,
+  UpdateEmailDto,
+  UserPreferencesDto,
+  QueryUsersDto
+} from './dto';
 
 @ApiTags('users')
 @Controller('users')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard)
+@ApiBearerAuth()
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly profileService: UserProfileService
+  ) {}
 
   @Post()
-  @Roles('admin')
-  @ApiOperation({ summary: 'Create user' })
-  @ApiResponse({ status: 201, type: User })
-  create(@Body() createUserDto: CreateUserDto) {
+  @Roles(UserRole.ADMIN)
+  @UseGuards(UserRoleGuard)
+  @ApiOperation({ summary: 'Create user (Admin only)' })
+  @ApiResponse({ 
+    status: HttpStatus.CREATED, 
+    description: 'User created successfully' 
+  })
+  async create(@Body() createUserDto: CreateUserDto) {
     return this.usersService.create(createUserDto);
   }
 
+  @Get()
+  @Roles(UserRole.ADMIN)
+  @UseGuards(UserRoleGuard)
+  @ApiOperation({ summary: 'Query users (Admin only)' })
+  @ApiResponse({ 
+    status: HttpStatus.OK, 
+    description: 'Users retrieved successfully' 
+  })
+  async findAll(@Query() queryDto: QueryUsersDto) {
+    return this.usersService.findAll(queryDto);
+  }
+
   @Get(':id')
-  @ApiOperation({ summary: 'Get user by id' })
-  @ApiResponse({ status: 200, type: User })
-  findOne(@Param('id') id: string) {
-    return this.usersService.findById(id);
+  @ApiOperation({ summary: 'Get user by ID' })
+  @ApiResponse({ 
+    status: HttpStatus.OK, 
+    description: 'User found' 
+  })
+  async findOne(@Param('id', ParseUUIDPipe) id: string) {
+    return this.usersService.findOne(id);
   }
 
   @Put(':id')
-  @ApiOperation({ summary: 'Update user' })
-  @ApiResponse({ status: 200, type: User })
-  update(@Param('id') id: string, @Body() updateUserDto: UpdateUserDto) {
-    return this.usersService.update(id, updateUserDto);
+  @ApiOperation({ summary: 'Update user profile' })
+  @ApiResponse({ 
+    status: HttpStatus.OK, 
+    description: 'User updated successfully' 
+  })
+  async updateProfile(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() updateUserDto: UpdateUserDto,
+  ) {
+    return this.profileService.updateProfile(id, updateUserDto);
+  }
+
+  @Patch(':id/password')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Update password' })
+  @ApiResponse({ 
+    status: HttpStatus.NO_CONTENT, 
+    description: 'Password updated successfully' 
+  })
+  async updatePassword(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() updatePasswordDto: UpdatePasswordDto,
+  ) {
+    await this.usersService.updatePassword(id, updatePasswordDto);
+  }
+
+  @Patch(':id/email')
+  @ApiOperation({ summary: 'Update email' })
+  @ApiResponse({ 
+    status: HttpStatus.OK, 
+    description: 'Email updated successfully' 
+  })
+  async updateEmail(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() updateEmailDto: UpdateEmailDto,
+  ) {
+    return this.usersService.updateEmail(id, updateEmailDto);
+  }
+
+  @Patch(':id/preferences')
+  @ApiOperation({ summary: 'Update user preferences' })
+  @ApiResponse({ 
+    status: HttpStatus.OK, 
+    description: 'Preferences updated successfully' 
+  })
+  async updatePreferences(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() preferences: Partial<UserPreferencesDto>,
+  ) {
+    return this.profileService.updatePreferences(id, preferences);
+  }
+
+  @Get(':id/quota')
+  @ApiOperation({ summary: 'Get user storage quota' })
+  @ApiResponse({ 
+    status: HttpStatus.OK, 
+    description: 'Storage quota retrieved' 
+  })
+  async getStorageQuota(@Param('id', ParseUUIDPipe) id: string) {
+    return this.profileService.getStorageQuota(id);
   }
 
   @Delete(':id')
-  @Roles('admin')
-  @ApiOperation({ summary: 'Deactivate user' })
-  @ApiResponse({ status: 200 })
-  async remove(@Param('id') id: string) {
-    await this.usersService.deactivate(id);
-  }
-
-  @Post('verify-email/:token')
-  @ApiOperation({ summary: 'Verify email address' })
-  @ApiResponse({ status: 200, type: User })
-  verifyEmail(@Param('token') token: string) {
-    return this.usersService.verifyEmail(token);
-  }
-
-  @Post('reset-password/initiate')
-  @ApiOperation({ summary: 'Initiate password reset' })
-  @ApiResponse({ status: 200 })
-  initiatePasswordReset(@Body('email') email: string) {
-    return this.usersService.initiatePasswordReset(email);
-  }
-
-  @Post('reset-password/complete')
-  @ApiOperation({ summary: 'Complete password reset' })
-  @ApiResponse({ status: 200, type: User })
-  resetPassword(
-    @Body('token') token: string,
-    @Body('password') password: string,
-  ) {
-    return this.usersService.resetPassword(token, password);
+  @Roles(UserRole.ADMIN)
+  @UseGuards(UserRoleGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Delete user (Admin only)' })
+  @ApiResponse({ 
+    status: HttpStatus.NO_CONTENT, 
+    description: 'User deleted successfully' 
+  })
+  async remove(@Param('id', ParseUUIDPipe) id: string) {
+    await this.usersService.remove(id);
   }
 }

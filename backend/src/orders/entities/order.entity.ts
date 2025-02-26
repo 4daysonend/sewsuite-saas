@@ -1,13 +1,9 @@
-import {
-  Entity,
-  Column,
-  ManyToOne,
-  OneToMany,
-  CreateDateColumn,
-  UpdateDateColumn,
-} from 'typeorm';
+// /backend/src/orders/entities/order.entity.ts
+import { Entity, Column, ManyToOne, OneToMany } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 import { Payment } from '../../payments/entities/payment.entity';
+import { File } from '../../upload/entities/file.entity';
+import { BaseEntity } from '../../common/base.entity';
 
 export enum OrderStatus {
   DRAFT = 'draft',
@@ -29,36 +25,33 @@ export enum PaymentStatus {
 }
 
 @Entity('orders')
-export class Order {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
+export class Order extends BaseEntity {
+  @ManyToOne(() => User, (user) => user.clientOrders, { nullable: false })
+  client!: User;
 
-  @ManyToOne(() => User, (user) => user.clientOrders)
-  client: User;
-
-  @ManyToOne(() => User, (user) => user.tailorOrders)
-  tailor: User;
+  @ManyToOne(() => User, (user) => user.tailorOrders, { nullable: false })
+  tailor!: User;
 
   @Column('enum', { enum: OrderStatus, default: OrderStatus.DRAFT })
-  status: OrderStatus;
+  status: OrderStatus = OrderStatus.DRAFT;
 
   @Column('enum', { enum: PaymentStatus, default: PaymentStatus.PENDING })
-  paymentStatus: PaymentStatus;
+  paymentStatus: PaymentStatus = PaymentStatus.PENDING;
 
   @Column('jsonb')
-  measurements: Record<string, number>;
+  measurements: Record<string, number> = {};
 
   @Column('text')
-  description: string;
+  description = '';
 
   @Column('decimal', { precision: 10, scale: 2 })
-  price: number;
+  price = 0;
 
   @Column({ type: 'timestamptz', nullable: true })
-  dueDate: Date;
+  dueDate?: Date;
 
   @Column('jsonb', { nullable: true })
-  fabricDetails: {
+  fabricDetails?: {
     type: string;
     color: string;
     quantity: number;
@@ -66,34 +59,23 @@ export class Order {
   };
 
   @Column('jsonb', { nullable: true })
-  services: {
+  services?: Array<{
     type: string;
     price: number;
     description?: string;
-  }[];
+  }>;
 
   @OneToMany(() => Payment, (payment) => payment.order)
-  payments: Payment[];
+  payments!: Payment[];
+
+  @OneToMany(() => File, (file) => file.order)
+  attachments!: File[];
 
   @Column('jsonb', { nullable: true })
-  fittingSchedule: {
-    date: Date;
-    notes?: string;
-    status: 'scheduled' | 'completed' | 'cancelled';
-  }[];
+  metadata: Record<string, any> = {};
 
-  @Column({ nullable: true })
-  stripeCustomerId: string;
-
-  @Column({ nullable: true })
-  stripePaymentIntentId: string;
-
-  @CreateDateColumn()
-  createdAt: Date;
-
-  @UpdateDateColumn()
-  updatedAt: Date;
-
-  @Column('jsonb', { nullable: true })
-  metadata: Record<string, any>;
+  constructor(partial: Partial<Order>) {
+    super();
+    Object.assign(this, partial);
+  }
 }

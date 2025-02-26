@@ -1,6 +1,5 @@
-import { PartialType, OmitType } from '@nestjs/swagger';
-import { CreateUserDto } from './create-user.dto';
+import { OmitType, PartialType } from '@nestjs/swagger';
 
 export class UpdateUserDto extends PartialType(
-  OmitType(CreateUserDto, ['email', 'googleId'] as const)
+  OmitType(CreateUserDto, ['role'] as const)
 ) {}

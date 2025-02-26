@@ -1,34 +1,24 @@
-import {
-  IsEmail,
-  IsString,
-  IsEnum,
-  IsOptional,
-  MinLength,
-  IsPhoneNumber,
-} from 'class-validator';
+import { IsEmail, IsString, IsEnum, IsOptional, MinLength, IsPhoneNumber, ValidateNested } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import { UserRole } from '../entities/user.entity';
+import { UserPreferencesDto } from './user-preferences.dto';
 
 export class CreateUserDto {
-  @ApiProperty()
-  @IsEmail()
+  @ApiProperty({ example: 'user@example.com' })
+  @IsEmail({}, { message: 'Please provide a valid email address' })
   email: string;
 
   @ApiProperty()
   @IsString()
-  @MinLength(6)
-  @IsOptional()
-  password?: string;
-
-  @ApiPropertyOptional()
-  @IsString()
-  @IsOptional()
-  googleId?: string;
-
-  @ApiPropertyOptional({ enum: UserRole })
-  @IsEnum(UserRole)
-  @IsOptional()
-  role?: UserRole;
+  @MinLength(8)
+  @Matches(
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/,
+    {
+      message: 'Password must contain uppercase, lowercase, number and special character'
+    }
+  )
+  password: string;
 
   @ApiPropertyOptional()
   @IsString()
@@ -49,4 +39,15 @@ export class CreateUserDto {
   @IsString()
   @IsOptional()
   address?: string;
+
+  @ApiPropertyOptional({ enum: UserRole })
+  @IsEnum(UserRole)
+  @IsOptional()
+  role?: UserRole = UserRole.CLIENT;
+
+  @ApiPropertyOptional({ type: () => UserPreferencesDto })
+  @ValidateNested()
+  @Type(() => UserPreferencesDto)
+  @IsOptional()
+  preferences?: UserPreferencesDto;
 }

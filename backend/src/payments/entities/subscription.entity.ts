@@ -1,3 +1,4 @@
+// /backend/src/payments/entities/subscription.entity.ts
 import { Entity, Column, ManyToOne } from 'typeorm';
 import { BaseEntity } from '../../common/base.entity';
 import { User } from '../../users/entities/user.entity';
@@ -15,36 +16,41 @@ export enum SubscriptionStatus {
 @Entity('subscriptions')
 export class Subscription extends BaseEntity {
   @Column()
-  stripeSubscriptionId: string;
+  stripeSubscriptionId = '';
 
   @Column()
-  stripePriceId: string;
+  stripePriceId = '';
 
   @Column()
-  stripeCustomerId: string;
+  stripeCustomerId = '';
 
   @Column({
     type: 'enum',
     enum: SubscriptionStatus,
     default: SubscriptionStatus.INCOMPLETE,
   })
-  status: SubscriptionStatus;
+  status: SubscriptionStatus = SubscriptionStatus.INCOMPLETE;
 
-  @Column()
-  currentPeriodStart: Date;
+  @Column({ type: 'timestamptz' })
+  currentPeriodStart: Date = new Date();
 
-  @Column()
-  currentPeriodEnd: Date;
+  @Column({ type: 'timestamptz' })
+  currentPeriodEnd: Date = new Date();
 
-  @Column({ nullable: true })
-  canceledAt: Date;
+  @Column({ type: 'timestamptz', nullable: true })
+  canceledAt?: Date;
 
   @Column({ default: false })
-  cancelAtPeriodEnd: boolean;
+  cancelAtPeriodEnd = false;
 
-  @ManyToOne(() => User, (user) => user.subscriptions)
-  user: User;
+  @ManyToOne(() => User, { nullable: false })
+  user!: User;
 
   @Column({ type: 'jsonb', nullable: true })
-  metadata: Record<string, any>;
+  metadata: Record<string, any> = {};
+
+  constructor(partial: Partial<Subscription & { user: User }>) {
+    super();
+    Object.assign(this, partial);
+  }
 }

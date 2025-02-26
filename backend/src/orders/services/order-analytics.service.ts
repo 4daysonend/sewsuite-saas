@@ -1,10 +1,10 @@
+// /backend/src/orders/services/order-analytics.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { OrderRepository } from '../orders.repository';
-import { Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
+import { Repository, Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
+import { Order } from '../entities/order.entity';
 import { OrderAnalytics } from '../interfaces/analytics.interface';
 import { UserRole } from '../../users/entities/user.entity';
-import { OrderStatus } from '../entities/order.entity';
 import { differenceInDays } from 'date-fns';
 
 @Injectable()
@@ -12,8 +12,8 @@ export class OrderAnalyticsService {
   private readonly logger = new Logger(OrderAnalyticsService.name);
 
   constructor(
-    @InjectRepository(OrderRepository)
-    private readonly orderRepository: OrderRepository,
+    @InjectRepository(Order)
+    private readonly orderRepository: Repository<Order>,
   ) {}
 
   async getAnalyticsSummary(
@@ -42,7 +42,6 @@ export class OrderAnalyticsService {
         baseQuery.andWhere(dateFilter);
       }
 
-      // Get all orders for analysis
       const orders = await baseQuery.getMany();
 
       // Calculate basic metrics
@@ -51,8 +50,7 @@ export class OrderAnalyticsService {
         (sum, order) => sum + Number(order.price),
         0,
       );
-      const averageOrderValue =
-        totalOrders > 0 ? totalRevenue / totalOrders : 0;
+      const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
 
       // Get orders by status
       const ordersByStatus = await this.getOrdersByStatus(baseQuery);
@@ -76,7 +74,7 @@ export class OrderAnalyticsService {
         performanceMetrics,
       };
     } catch (error) {
-      this.logger.error(`Error generating analytics summary: ${error.message}`);
+      this.logger.error(`Error generating analytics summary: ${error instanceof Error ? error.message : 'Unknown error'}`);
       throw error;
     }
   }
@@ -95,11 +93,15 @@ export class OrderAnalyticsService {
         ...acc,
         [curr.status]: parseInt(curr.count),
       }),
-      {},
+      {} as Record<string, number>
     );
   }
 
-  private async getRevenueByPeriod(baseQuery: any): Promise<any[]> {
+  private async getRevenueByPeriod(baseQuery: any): Promise<Array<{
+    period: string;
+    revenue: number;
+    orderCount: number;
+  }>> {
     return baseQuery
       .select([
         "DATE_TRUNC('month', order.createdAt)",
@@ -112,63 +114,6 @@ export class OrderAnalyticsService {
       .groupBy('period')
       .orderBy('period', 'ASC')
       .getRawMany();
-  }
-
-  private async getCustomerMetrics(baseQuery: any) {
-    // Get total unique customers
-    const totalCustomersQuery = baseQuery
-      .select('COUNT(DISTINCT client.id)', 'count')
-      .getRawOne();
-
-    // Get repeat customers (clients with more than one order)
-    const repeatCustomersQuery = baseQuery
-      .select('client.id')
-      .addSelect('COUNT(*)', 'orderCount')
-      .groupBy('client.id')
-      .having('COUNT(*) > 1')
-      .getRawMany();
-
-    const [totalCustomers, repeatCustomers] = await Promise.all([
-      totalCustomersQuery,
-      repeatCustomersQuery,
-    ]);
-
-    return {
-      totalCustomers: parseInt(totalCustomers.count),
-      repeatCustomers: repeatCustomers.length,
-      averageOrdersPerCustomer:
-        totalCustomers.count > 0
-          ? repeatCustomers.reduce(
-              (sum, customer) => sum + parseInt(customer.orderCount),
-              0,
-            ) / totalCustomers.count
-          : 0,
-    };
-  }
-
-  private async getPerformanceMetrics(orders: any[]): Promise<any> {
-    const completedOrders = orders.filter(
-      (order) => order.status === OrderStatus.COMPLETED,
-    );
-    const canceledOrders = orders.filter(
-      (order) => order.status === OrderStatus.CANCELLED,
-    );
-
-    const completionTimes = completedOrders.map((order) =>
-      differenceInDays(new Date(order.updatedAt), new Date(order.createdAt)),
-    );
-
-    return {
-      completionRate:
-        orders.length > 0 ? (completedOrders.length / orders.length) * 100 : 0,
-      averageCompletionTime:
-        completionTimes.length > 0
-          ? completionTimes.reduce((sum, time) => sum + time, 0) /
-            completionTimes.length
-          : 0,
-      cancelationRate:
-        orders.length > 0 ? (canceledOrders.length / orders.length) * 100 : 0,
-    };
   }
 
   private buildDateFilter(startDate?: string, endDate?: string) {
@@ -190,74 +135,56 @@ export class OrderAnalyticsService {
     return null;
   }
 
-  async getPerformanceReport(userId: string, role: string): Promise<any> {
-    try {
-      const baseQuery = this.orderRepository
-        .createQueryBuilder('order')
-        .leftJoinAndSelect('order.client', 'client')
-        .leftJoinAndSelect('order.tailor', 'tailor');
+  private async getCustomerMetrics(baseQuery: any) {
+    const totalCustomers = await baseQuery
+      .select('COUNT(DISTINCT client.id)', 'count')
+      .getRawOne();
 
-      if (role === UserRole.TAILOR) {
-        baseQuery.where('tailor.id = :userId', { userId });
-      }
+    const repeatCustomers = await baseQuery
+      .select('client.id')
+      .addSelect('COUNT(*)', 'orderCount')
+      .groupBy('client.id')
+      .having('COUNT(*) > 1')
+      .getRawMany();
 
-      // Calculate key performance indicators
-      const [completionStats, revenueStats, customerSatisfaction] =
-        await Promise.all([
-          this.calculateCompletionStats(baseQuery),
-          this.calculateRevenueStats(baseQuery),
-          this.calculateCustomerSatisfaction(baseQuery),
-        ]);
-
-      return {
-        completionStats,
-        revenueStats,
-        customerSatisfaction,
-        generatedAt: new Date(),
-      };
-    } catch (error) {
-      this.logger.error(
-        `Error generating performance report: ${error.message}`,
-      );
-      throw error;
-    }
+    return {
+      totalCustomers: parseInt(totalCustomers.count),
+      repeatCustomers: repeatCustomers.length,
+      averageOrdersPerCustomer:
+        totalCustomers.count > 0
+          ? repeatCustomers.reduce(
+              (sum, customer) => sum + parseInt(customer.orderCount),
+              0,
+            ) / totalCustomers.count
+          : 0,
+    };
   }
 
-  private async calculateCompletionStats(baseQuery: any) {
-    return baseQuery
-      .select([
-        'AVG(CASE WHEN order.status = :completed THEN 1 ELSE 0 END)',
-        'completionRate',
-        'AVG(EXTRACT(EPOCH FROM (order.updatedAt - order.createdAt))/86400)',
-        'avgCompletionDays',
-      ])
-      .setParameter('completed', OrderStatus.COMPLETED)
-      .getRawOne();
-  }
+  private getPerformanceMetrics(orders: Order[]) {
+    const completedOrders = orders.filter(
+      (order) => order.status === 'COMPLETED',
+    );
+    const canceledOrders = orders.filter(
+      (order) => order.status === 'CANCELLED',
+    );
 
-  private async calculateRevenueStats(baseQuery: any) {
-    return baseQuery
-      .select([
-        'SUM(order.price)',
-        'totalRevenue',
-        'AVG(order.price)',
-        'avgOrderValue',
-        'COUNT(*)',
-        'totalOrders',
-      ])
-      .getRawOne();
-  }
+    const completionTimes = completedOrders.map((order) =>
+      differenceInDays(
+        new Date(order.updatedAt),
+        new Date(order.createdAt),
+      ),
+    );
 
-  private async calculateCustomerSatisfaction(baseQuery: any) {
-    // This could be expanded with actual customer feedback/rating data
-    return baseQuery
-      .select([
-        'COUNT(CASE WHEN order.status = :cancelled THEN 1 END)',
-        'cancelations',
-        'COUNT(*)',
-        'totalOrders',
-      ])
-      .setParameter('cancelled', OrderStatus.CANCELLED)
-      .getRawOne();
+    return {
+      completionRate:
+        orders.length > 0 ? (completedOrders.length / orders.length) * 100 : 0,
+      averageCompletionTime:
+        completionTimes.length > 0
+          ? completionTimes.reduce((sum, time) => sum + time, 0) /
+            completionTimes.length
+          : 0,
+      cancelationRate:
+        orders.length > 0 ? (canceledOrders.length / orders.length) * 100 : 0,
+    };
   }
 }
