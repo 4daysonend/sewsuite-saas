@@ -19,7 +19,7 @@ export class TemplateService {
   async renderTemplate(
     templateName: string,
     data: any,
-    locale: string = 'en',
+    locale = 'en',
   ): Promise<{ html: string; text: string }> {
     try {
       const template = this.getTemplate(templateName, locale);

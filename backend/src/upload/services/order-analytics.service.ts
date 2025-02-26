@@ -1,53 +1,69 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { OrderRepository } from '../orders.repository';
-import { Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
-import { OrderAnalytics } from '../interfaces/analytics.interface';
-import { UserRole } from '../../users/entities/user.entity';
+import { Repository } from 'typeorm';
+import { Order } from '../../orders/entities/order.entity';
 
 @Injectable()
 export class OrderAnalyticsService {
   private readonly logger = new Logger(OrderAnalyticsService.name);
 
   constructor(
-    @InjectRepository(OrderRepository)
-    private readonly orderRepository: OrderRepository
+    @InjectRepository(Order)
+    private readonly orderRepository: Repository<Order>,
   ) {}
 
-  async getAnalyticsSummary(
-    userId: string,
-    role: string,
-    startDate?: string,
-    endDate?: string
-  ): Promise<OrderAnalytics> {
+  async getAnalytics(userId: string, startDate: Date, endDate: Date) {
     try {
-      const dateFilter = this.buildDateFilter(startDate, endDate);
-      const baseQuery = this.orderRepository.createQueryBuilder('order')
-        .leftJoinAndSelect('order.client', 'client')
-        .leftJoinAndSelect('order.tailor', 'tailor');
+      const orders = await this.orderRepository
+        .createQueryBuilder('order')
+        .where('order.userId = :userId', { userId })
+        .andWhere('order.createdAt BETWEEN :startDate AND :endDate', {
+          startDate,
+          endDate,
+        })
+        .getMany();
 
-      // Apply role-based filtering
-      if (role === UserRole.CLIENT) {
-        baseQuery.where('client.id = :userId', { userId });
-      } else if (role === UserRole.TAILOR) {
-        baseQuery.where('tailor.id = :userId', { userId });
-      }
-
-      // Apply date filtering if provided
-      if (dateFilter) {
-        baseQuery.andWhere(dateFilter);
-      }
-
-      // Get basic metrics
-      const orders = await baseQuery.getMany();
       const totalOrders = orders.length;
-      const totalRevenue = orders.reduce((sum, order) => sum + Number(order.price), 0);
+      const totalRevenue = orders.reduce((sum, order) => sum + order.price, 0);
+      const averageOrderValue =
+        totalOrders > 0 ? totalRevenue / totalOrders : 0;
 
-      // Get orders by status
-      const ordersByStatus = await this.getOrdersByStatus(baseQuery);
+      const dailyRevenue = this.calculateDailyRevenue(orders);
+      const ordersByStatus = this.groupOrdersByStatus(orders);
 
-      // Get revenue by period
-      const revenueByPeriod = await this.getRevenueByPeriod(baseQuery);
+      return {
+        totalOrders,
+        totalRevenue,
+        averageOrderValue,
+        dailyRevenue,
+        ordersByStatus,
+      };
+    } catch (error) {
+      this.logger.error(
+        `Failed to get analytics: ${error instanceof Error ? error.message : 'Unknown error occurred'}`,
+      );
+      throw error;
+    }
+  }
 
-      // Get customer metrics
-      const customer
+  private calculateDailyRevenue(orders: Order[]): Record<string, number> {
+    return orders.reduce(
+      (acc, order) => {
+        const date = order.createdAt.toISOString().split('T')[0];
+        acc[date] = (acc[date] || 0) + order.price;
+        return acc;
+      },
+      {} as Record<string, number>,
+    );
+  }
+
+  private groupOrdersByStatus(orders: Order[]): Record<string, number> {
+    return orders.reduce(
+      (acc, order) => {
+        acc[order.status] = (acc[order.status] || 0) + 1;
+        return acc;
+      },
+      {} as Record<string, number>,
+    );
+  }
+}

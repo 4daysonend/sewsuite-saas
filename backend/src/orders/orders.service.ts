@@ -1,3 +1,4 @@
+// /backend/src/orders/orders.service.ts
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -76,4 +77,4 @@ export class OrdersService {
 
     return this.ordersRepository.save(order);
   }
-}
+} 

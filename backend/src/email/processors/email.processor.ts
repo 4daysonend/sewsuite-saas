@@ -15,8 +15,8 @@ export class EmailProcessor {
       service: this.configService.get('EMAIL_SERVICE'),
       auth: {
         user: this.configService.get('EMAIL_USER'),
-        pass: this.configService.get('EMAIL_PASSWORD')
-      }
+        pass: this.configService.get('EMAIL_PASSWORD'),
+      },
     });
   }
 
@@ -32,8 +32,8 @@ export class EmailProcessor {
         html,
         text,
         headers: {
-          'X-Priority': job.data.priority === 'high' ? '1' : '3'
-        }
+          'X-Priority': job.data.priority === 'high' ? '1' : '3',
+        },
       });
 
       this.logger.log(`Email sent successfully to ${to}`);

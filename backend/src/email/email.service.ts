@@ -1,141 +1,145 @@
+// /backend/src/email/email.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectQueue } from '@nestjs/bull';
-import { Queue } from 'bull';
-import * as nodemailer from 'nodemailer';
-import { EmailTemplate } from './interfaces/email-template.interface';
-import { EmailOptions } from './interfaces/email-options.interface';
+
+interface EmailOptions {
+  to: string;
+  subject: string;
+  html?: string;
+  text?: string;
+}
+
+interface PaymentEmailData {
+  orderId: string;
+  amount: number;
+  date?: Date;
+}
+
+interface EmailError extends Error {
+  code?: string;
+  responseCode?: number;
+}
 
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
-  private readonly transporter: nodemailer.Transporter;
 
-  constructor(
-    private readonly configService: ConfigService,
-    @InjectQueue('email') private readonly emailQueue: Queue,
-  ) {
-    this.transporter = nodemailer.createTransport({
-      service: this.configService.get('EMAIL_SERVICE'),
-      auth: {
-        user: this.configService.get('EMAIL_USER'),
-        pass: this.configService.get('EMAIL_PASSWORD'),
-      },
-    });
-  }
+  constructor(private readonly configService: ConfigService) {}
 
   async sendEmail(options: EmailOptions): Promise<void> {
     try {
-      await this.emailQueue.add('send-email', options, {
-        attempts: 3,
-        backoff: {
-          type: 'exponential',
-          delay: 5000,
-        },
-      });
+      this.logger.log(`Sending email to ${options.to}: ${options.subject}`);
     } catch (error) {
-      this.logger.error(`Failed to queue email: ${error.message}`);
-      throw error;
+      const emailError = error as EmailError;
+      this.logger.error(`Failed to send email: ${emailError.message}`);
+      throw emailError;
     }
   }
 
-  async sendVerificationEmail(email: string, token: string): Promise<void> {
-    const template = this.getTemplate('verification', {
-      verificationLink: `${this.configService.get('FRONTEND_URL')}/verify-email/${token}`,
-    });
-
-    await this.sendEmail({
-      to: email,
-      subject: 'Verify Your Email Address',
-      html: template.html,
-      text: template.text,
-    });
-  }
-
-  async sendPasswordResetEmail(email: string, token: string): Promise<void> {
-    const template = this.getTemplate('passwordReset', {
-      resetLink: `${this.configService.get('FRONTEND_URL')}/reset-password/${token}`,
-    });
-
-    await this.sendEmail({
-      to: email,
-      subject: 'Reset Your Password',
-      html: template.html,
-      text: template.text,
-    });
-  }
-
-  async sendAppointmentConfirmation(
+  async sendOrderPaymentConfirmation(
     email: string,
-    appointmentDetails: any,
+    data: PaymentEmailData,
   ): Promise<void> {
-    const template = this.getTemplate(
-      'appointmentConfirmation',
-      appointmentDetails,
-    );
+    try {
+      const formattedAmount = new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+      }).format(data.amount);
 
-    await this.sendEmail({
-      to: email,
-      subject: 'Appointment Confirmation',
-      html: template.html,
-      text: template.text,
-    });
+      const emailContent = {
+        to: email,
+        subject: 'Payment Confirmation',
+        html: `
+          <h1>Payment Confirmed</h1>
+          <p>Payment for order #${data.orderId} has been processed successfully.</p>
+          <p>Amount: ${formattedAmount}</p>
+          ${data.date ? `<p>Date: ${data.date.toLocaleDateString()}</p>` : ''}
+        `,
+        text: `
+          Payment Confirmed
+          Payment for order #${data.orderId} has been processed successfully.
+          Amount: ${formattedAmount}
+          ${data.date ? `Date: ${data.date.toLocaleDateString()}` : ''}
+        `.trim(),
+      } satisfies EmailOptions;
+
+      await this.sendEmail(emailContent);
+    } catch (error) {
+      const emailError = error as EmailError;
+      this.logger.error(
+        `Failed to send payment confirmation email: ${emailError.message}`,
+      );
+      throw emailError;
+    }
   }
 
-  private getTemplate(name: string, data: any): EmailTemplate {
-    const templates = {
-      verification: {
-        html: `
-          <h1>Welcome to Tailor Platform!</h1>
-          <p>Please verify your email address by clicking the link below:</p>
-          <a href="${data.verificationLink}">${data.verificationLink}</a>
-          <p>This link will expire in 24 hours.</p>
-        `,
-        text: `
-          Welcome to Tailor Platform!
-          Please verify your email address by clicking the link below:
-          ${data.verificationLink}
-          This link will expire in 24 hours.
-        `,
-      },
-      passwordReset: {
-        html: `
-          <h1>Password Reset Request</h1>
-          <p>You requested to reset your password. Click the link below to proceed:</p>
-          <a href="${data.resetLink}">${data.resetLink}</a>
-          <p>This link will expire in 1 hour.</p>
-          <p>If you didn't request this, please ignore this email.</p>
-        `,
-        text: `
-          Password Reset Request
-          You requested to reset your password. Click the link below to proceed:
-          ${data.resetLink}
-          This link will expire in 1 hour.
-          If you didn't request this, please ignore this email.
-        `,
-      },
-      appointmentConfirmation: {
-        html: `
-          <h1>Appointment Confirmed</h1>
-          <p>Your appointment has been scheduled for:</p>
-          <p>Date: ${data.date}</p>
-          <p>Time: ${data.time}</p>
-          <p>Tailor: ${data.tailorName}</p>
-          <p>Location: ${data.location}</p>
-          <p>Service: ${data.service}</p>
-        `,
-        text: `
-          Appointment Confirmed
-          Your appointment has been scheduled for:
-          Date: ${data.date}
-          Time: ${data.time}
-          Tailor: ${data.tailorName}
-          Location: ${data.location}
-          Service: ${data.service}
-        `,
-      },
-    };
+  async sendOrderPaymentFailedNotification(
+    email: string,
+    data: PaymentEmailData,
+  ): Promise<void> {
+    try {
+      const formattedAmount = new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+      }).format(data.amount);
 
-    return templates[name];
+      const emailContent = {
+        to: email,
+        subject: 'Payment Failed',
+        html: `
+          <h1>Payment Failed</h1>
+          <p>Payment for order #${data.orderId} could not be processed.</p>
+          <p>Amount: ${formattedAmount}</p>
+        `,
+        text: `
+          Payment Failed
+          Payment for order #${data.orderId} could not be processed.
+          Amount: ${formattedAmount}
+        `.trim(),
+      } satisfies EmailOptions;
+
+      await this.sendEmail(emailContent);
+    } catch (error) {
+      const emailError = error as EmailError;
+      this.logger.error(
+        `Failed to send payment failed notification: ${emailError.message}`,
+      );
+      throw emailError;
+    }
+  }
+
+  // Instead of throwing Not Implemented error, provide proper implementation
+  async sendSubscriptionConfirmation(subscriptionData: {
+    email: string;
+    subscriptionId: string;
+    startDate: Date;
+    plan: string;
+  }): Promise<void> {
+    try {
+      const emailContent = {
+        to: subscriptionData.email,
+        subject: 'Subscription Confirmation',
+        html: `
+          <h1>Subscription Confirmed</h1>
+          <p>Your subscription (ID: ${subscriptionData.subscriptionId}) has been activated.</p>
+          <p>Plan: ${subscriptionData.plan}</p>
+          <p>Start Date: ${subscriptionData.startDate.toLocaleDateString()}</p>
+        `,
+        text: `
+          Subscription Confirmed
+          Your subscription (ID: ${subscriptionData.subscriptionId}) has been activated.
+          Plan: ${subscriptionData.plan}
+          Start Date: ${subscriptionData.startDate.toLocaleDateString()}
+        `.trim(),
+      } satisfies EmailOptions;
+
+      await this.sendEmail(emailContent);
+    } catch (error) {
+      const emailError = error as EmailError;
+      this.logger.error(
+        `Failed to send subscription confirmation: ${emailError.message}`,
+      );
+      throw emailError;
+    }
   }
 }

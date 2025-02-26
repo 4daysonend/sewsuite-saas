@@ -7,9 +7,7 @@ import { BullModule } from '@nestjs/bull';
 import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { OrdersModule } from './orders/orders.module';
-import { MessagingModule } from './messaging/messaging.module';
 import { CalendarModule } from './calendar/calendar.module';
-import { NotificationsModule } from './notifications/notifications.module';
 import { EmailModule } from './email/email.module';
 
 @Module({
@@ -22,20 +20,20 @@ import { EmailModule } from './email/email.module';
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
         type: 'postgres',
-        host: configService.get('POSTGRES_HOST'),
-        port: configService.get('POSTGRES_PORT'),
-        username: configService.get('POSTGRES_USER'),
-        password: configService.get('POSTGRES_PASSWORD'),
-        database: configService.get('POSTGRES_DB'),
+        host: configService.get<string>('POSTGRES_HOST'),
+        port: configService.get<number>('POSTGRES_PORT'),
+        username: configService.get<string>('POSTGRES_USER'),
+        password: configService.get<string>('POSTGRES_PASSWORD'),
+        database: configService.get<string>('POSTGRES_DB'),
         entities: ['dist/**/*.entity{.ts,.js}'],
-        synchronize: configService.get('NODE_ENV') !== 'production',
-        logging: configService.get('NODE_ENV') === 'development',
+        synchronize: configService.get<string>('NODE_ENV') !== 'production',
+        logging: configService.get<string>('NODE_ENV') === 'development',
       }),
     }),
     MongooseModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
-        uri: configService.get('MONGODB_URI'),
+        uri: configService.get<string>('MONGODB_URI'),
         useNewUrlParser: true,
         useUnifiedTopology: true,
       }),
@@ -44,7 +42,7 @@ import { EmailModule } from './email/email.module';
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
         config: {
-          url: configService.get('REDIS_URI'),
+          url: configService.get<string>('REDIS_URI'),
         },
       }),
     }),
@@ -52,17 +50,15 @@ import { EmailModule } from './email/email.module';
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
         redis: {
-          host: configService.get('REDIS_HOST', 'localhost'),
-          port: configService.get('REDIS_PORT', 6379),
+          host: configService.get<string>('REDIS_HOST', 'localhost'),
+          port: configService.get<number>('REDIS_PORT', 6379),
         },
       }),
     }),
     UsersModule,
     AuthModule,
     OrdersModule,
-    MessagingModule,
     CalendarModule,
-    NotificationsModule,
     EmailModule,
   ],
 })
