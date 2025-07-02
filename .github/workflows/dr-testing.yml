@@ -1,0 +1,144 @@
+name: Disaster Recovery Testing
+
+on:
+  schedule:
+    # Run on the first day of each month at 2 AM UTC
+    - cron: '0 2 1 * *'
+  
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Type of DR test to run'
+        required: true
+        default: 'database-restore'
+        type: choice
+        options:
+          - database-restore
+          - full-restore
+          - point-in-time-recovery
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  dr-test:
+    name: Run Disaster Recovery Test
+    runs-on: ubuntu-latest
+    environment: staging
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      
+      - name: Set test type
+        id: test-type
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "TEST_TYPE=${{ github.event.inputs.test_type }}" >> $GITHUB_ENV
+          else
+            # Default test for scheduled runs - rotate through tests
+            DAY_OF_YEAR=$(date +%j)
+            if [ $((DAY_OF_YEAR % 3)) -eq 0 ]; then
+              echo "TEST_TYPE=database-restore" >> $GITHUB_ENV
+            elif [ $((DAY_OF_YEAR % 3)) -eq 1 ]; then
+              echo "TEST_TYPE=point-in-time-recovery" >> $GITHUB_ENV
+            else
+              echo "TEST_TYPE=full-restore" >> $GITHUB_ENV
+            fi
+          fi
+      
+      - name: Run Database Restore Test
+        if: env.TEST_TYPE == 'database-restore'
+        run: |
+          chmod +x ./scripts/disaster-recovery/test-rds-restore.sh
+          ./scripts/disaster-recovery/test-rds-restore.sh staging us-east-1
+        
+      - name: Run Point-in-Time Recovery Test
+        if: env.TEST_TYPE == 'point-in-time-recovery'
+        run: |
+          chmod +x ./scripts/disaster-recovery/point-in-time-restore.sh
+          chmod +x ./scripts/disaster-recovery/validate-restore.sh
+          
+          # Get a timestamp from 1 hour ago
+          TIMESTAMP=$(date -u -d '1 hour ago' '+%Y-%m-%dT%H:%M:%SZ')
+          
+          # Run point-in-time recovery test
+          ./scripts/disaster-recovery/point-in-time-restore.sh \
+            --timestamp "$TIMESTAMP" \
+            --environment staging \
+            --test-mode
+        
+      - name: Run Full Restore Test
+        if: env.TEST_TYPE == 'full-restore'
+        run: |
+          chmod +x ./scripts/disaster-recovery/test-full-restore.sh
+          ./scripts/disaster-recovery/test-full-restore.sh staging us-east-1
+      
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        with:
+          name: dr-test-results
+          path: ./test-results/dr-tests/
+      
+      - name: Send notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "${{ job.status == 'success' && '✅ DR Test Passed!' || '❌ DR Test Failed!' }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Disaster Recovery Test Results*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Test Type:*\n${{ env.TEST_TYPE }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status:*\n${{ job.status == 'success' && '✅ Passed' || '❌ Failed' }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Environment:*\nstaging"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Triggered by:*\n${{ github.event_name == 'workflow_dispatch' && 'Manual run' || 'Scheduled run' }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View Results"
+                      },
+                      "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_DR_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

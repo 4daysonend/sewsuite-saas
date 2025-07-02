@@ -1,0 +1,288 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write  # Required for OIDC federation
+
+jobs:
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          config-path: .gitleaks.toml
+
+      - name: Install dependencies
+        run: |
+          cd backend && npm ci
+          cd ../frontend && npm ci
+
+      - name: SAST Scan
+        uses: snyk/actions/node@master
+        continue-on-error: false  # Fail pipeline on high vulnerabilities
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+      - name: Container security scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          exit-code: 1  # Exit with error on critical vulnerabilities
+          severity: 'CRITICAL,HIGH'
+
+      - name: Software composition analysis
+        uses: anchore/scan-action@v3
+        with:
+          path: "."
+          fail-build: true  # Fail on policy violations
+          severity-cutoff: high
+
+  test:
+    name: Tests
+    needs: security-scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        run: |
+          cd backend && npm ci
+          cd ../frontend && npm ci
+      
+      - name: Run tests
+        run: |
+          cd backend && npm test
+          cd ../frontend && npm test
+
+  terraform-validate:
+    name: Terraform Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+      
+      - name: Terraform Init
+        run: cd terraform && terraform init -backend=false
+      
+      - name: Terraform Validate
+        run: cd terraform && terraform validate
+
+      - name: Terraform Security Scan
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          working-directory: terraform
+          soft_fail: false  # Fail on high severity issues
+
+  build-deploy:
+    name: Build and Deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, terraform-validate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsECSDeploy
+          aws-region: us-east-1
+          role-session-name: GitHubActionDeployment
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile.prod
+          push: true
+          tags: ${{ steps.login-ecr.outputs.registry }}/sewsuite-backend:${{ github.sha }},${{ steps.login-ecr.outputs.registry }}/sewsuite-backend:latest
+          build-args: NODE_ENV=production
+          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/sewsuite-backend:buildcache
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/sewsuite-backend:buildcache,mode=max
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile.prod
+          push: true
+          tags: ${{ steps.login-ecr.outputs.registry }}/sewsuite-frontend:${{ github.sha }},${{ steps.login-ecr.outputs.registry }}/sewsuite-frontend:latest
+          build-args: NODE_ENV=production
+          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/sewsuite-frontend:buildcache
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/sewsuite-frontend:buildcache,mode=max
+
+      # Sign container images
+      - name: Set up Cosign
+        uses: sigstore/cosign-installer@main
+
+      - name: Sign backend image
+        run: |
+          cosign sign --key env://COSIGN_PRIVATE_KEY ${ECR_REGISTRY}/sewsuite-backend:${GITHUB_SHA}
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+
+      # Complete the backend deployment
+      - name: Deploy to ECS
+        run: |
+          # Get current running task definition
+          TASK_DEF=$(aws ecs describe-task-definition --task-definition sewsuite-backend-prod --query 'taskDefinition' --output json)
+          
+          # Create new task definition with new image, but same configuration
+          NEW_TASK_DEF=$(echo $TASK_DEF | jq '.containerDefinitions[0].image = "${{ steps.login-ecr.outputs.registry }}/sewsuite-backend:${{ github.sha }}"')
+          
+          # Register new task definition
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json "$NEW_TASK_DEF" --query 'taskDefinition.taskDefinitionArn' --output text)
+          
+          # Start blue-green deployment
+          ./scripts/blue-green-deploy.sh \
+            --cluster sewsuite-cluster-prod \
+            --service sewsuite-backend-service \
+            --task-definition $NEW_TASK_DEF_ARN
+
+      - name: Sign frontend image
+        run: |
+          cosign sign --key env://COSIGN_PRIVATE_KEY ${ECR_REGISTRY}/sewsuite-frontend:${GITHUB_SHA}
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+
+      - name: Deploy frontend to ECS
+        run: |
+          # Get current running task definition
+          TASK_DEF=$(aws ecs describe-task-definition --task-definition sewsuite-frontend-prod --query 'taskDefinition' --output json)
+          
+          # Create new task definition with new image, but same configuration
+          NEW_TASK_DEF=$(echo $TASK_DEF | jq '.containerDefinitions[0].image = "${{ steps.login-ecr.outputs.registry }}/sewsuite-frontend:${{ github.sha }}"')
+          
+          # Register new task definition
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json "$NEW_TASK_DEF" --query 'taskDefinition.taskDefinitionArn' --output text)
+          
+          # Start blue-green deployment
+          ./scripts/blue-green-deploy.sh \
+            --cluster sewsuite-cluster-prod \
+            --service sewsuite-frontend-service \
+            --task-definition $NEW_TASK_DEF_ARN
+
+      - name: Verify deployment health
+        run: |
+          # Wait for services to stabilize
+          aws ecs wait services-stable \
+            --cluster sewsuite-cluster-prod \
+            --services sewsuite-backend-service sewsuite-frontend-service
+            
+          # Run health check script
+          ./scripts/health-check.sh \
+            --backend-url https://api.sewsuite.co/health \
+            --frontend-url https://app.sewsuite.co
+
+      - name: Run post-deployment tests
+        run: |
+          # Smoke tests to verify basic functionality
+          ./scripts/smoke-test.sh --environment production
+          
+          # Performance tests to verify no regressions
+          ./scripts/performance-test.sh --environment production --threshold 1000
+
+      - name: Monitor deployment
+        run: |
+          # Create CloudWatch alarms to monitor the deployment
+          ./scripts/cloudwatch-alarms.sh --environment production --deployment-id ${{ github.sha }}
+          
+          # Wait and check for any unexpected errors in the first 15 minutes
+          ./scripts/monitor-deployment.sh --duration 15 --environment production
+
+      - name: Notify deployment status
+        if: always()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "${{ job.status == 'success' && '✅ Deployment succeeded!' || '❌ Deployment failed!' }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ job.status == 'success' && '✅ *Deployment succeeded*' || '❌ *Deployment failed*' }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Repository:*\n${{ github.repository }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Commit:*\n${{ github.sha }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Workflow:*\n${{ github.workflow }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View Workflow"
+                      },
+                      "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      # Conditional rollback if verification fails
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Deployment verification failed, rolling back to previous version"
+          ./scripts/rollback.sh \
+            --cluster sewsuite-cluster-prod \
+            --services "sewsuite-backend-service sewsuite-frontend-service" \
+            --region us-east-1

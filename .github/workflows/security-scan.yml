@@ -1,0 +1,176 @@
+name: Security Scan
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM
+  workflow_dispatch:
+
+jobs:
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # For better secret scanning
+
+      # Secret Detection
+      - name: Run GitLeaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+      # Dependency Audit
+      - name: Node.js Security Audit
+        run: |
+          cd backend && npm audit --audit-level high
+          cd ../frontend && npm audit --audit-level high
+
+      # Infrastructure Security Scan
+      - name: Terraform Security Scan
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: terraform
+          framework: terraform
+          output_format: sarif
+          output_file: terraform-results.sarif
+
+      # Upload Terraform scan results
+      - name: Upload Terraform scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: terraform-results.sarif
+          category: terraform
+
+      # Authenticate with ECR
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Docker Image Vulnerability Scan
+      - name: Scan Latest Images with Grype
+        run: |
+          docker pull ${{ secrets.ECR_BACKEND_URI }}:latest
+          docker pull ${{ secrets.ECR_FRONTEND_URI }}:latest
+          
+          # Install Grype
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          
+          # Scan images and generate detailed reports
+          grype ${{ secrets.ECR_BACKEND_URI }}:latest --output json > backend-vulnerabilities.json
+          grype ${{ secrets.ECR_FRONTEND_URI }}:latest --output json > frontend-vulnerabilities.json
+          
+          # Generate summaries
+          echo "## Backend Image Vulnerabilities" >> $GITHUB_STEP_SUMMARY
+          cat backend-vulnerabilities.json | jq -r '.matches | group_by(.vulnerability.severity) | map({"severity": .[0].vulnerability.severity, "count": length}) | .[] | "- \(.severity): \(.count)"' >> $GITHUB_STEP_SUMMARY
+          
+          echo "## Frontend Image Vulnerabilities" >> $GITHUB_STEP_SUMMARY
+          cat frontend-vulnerabilities.json | jq -r '.matches | group_by(.vulnerability.severity) | map({"severity": .[0].vulnerability.severity, "count": length}) | .[] | "- \(.severity): \(.count)"' >> $GITHUB_STEP_SUMMARY
+
+      # Scan for GitHub Security tab integration  
+      - name: Scan Backend Image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ secrets.ECR_BACKEND_URI }}:latest
+          format: 'sarif'
+          output: 'backend-trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Scan Frontend Image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ secrets.ECR_FRONTEND_URI }}:latest
+          format: 'sarif'
+          output: 'frontend-trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      # Upload Trivy scan results
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'backend-trivy-results.sarif'
+          category: backend-container
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'frontend-trivy-results.sarif'
+          category: frontend-container
+
+      # Upload Results as artifacts
+      - name: Upload Security Results
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-reports
+          path: |
+            backend-vulnerabilities.json
+            frontend-vulnerabilities.json
+
+      # Fail on critical vulnerabilities (optional)
+      - name: Check for critical vulnerabilities
+        run: |
+          BACKEND_CRITICALS=$(cat backend-vulnerabilities.json | jq '[.matches[] | select(.vulnerability.severity=="Critical")] | length')
+          FRONTEND_CRITICALS=$(cat frontend-vulnerabilities.json | jq '[.matches[] | select(.vulnerability.severity=="Critical")] | length')
+          
+          if [ "$BACKEND_CRITICALS" -gt 0 ] || [ "$FRONTEND_CRITICALS" -gt 0 ]; then
+            echo "Critical vulnerabilities detected. Review security reports."
+            exit 1
+          fi
+
+      # Notify on vulnerabilities
+      - name: Notify on vulnerabilities
+        if: failure()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "⚠️ Security vulnerabilities detected!",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "⚠️ *Security scan detected vulnerabilities*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Repository:*\n${{ github.repository }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Workflow:*\n${{ github.workflow }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                      "type": "plain_text",
+                      "text": "View Security Report"
+                      },
+                      "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
