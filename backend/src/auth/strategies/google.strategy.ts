@@ -1,45 +1,57 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
-import { Strategy, Profile } from 'passport-google-oauth20';
+import { Strategy, VerifyCallback, Profile } from 'passport-google-oauth20';
 import { ConfigService } from '@nestjs/config';
-import { GoogleUser } from '../interfaces/auth.interface';
+import { AuthService } from '../auth.service';
 
 @Injectable()
 export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
-  private readonly logger = new Logger(GoogleStrategy.name);
+  constructor(
+    configService: ConfigService, // Remove 'private' to avoid the warning
+    private authService: AuthService,
+  ) {
+    const clientID = configService.get<string>('GOOGLE_CLIENT_ID');
+    const clientSecret = configService.get<string>('GOOGLE_CLIENT_SECRET');
+    const callbackURL = configService.get<string>('GOOGLE_CALLBACK_URL');
 
-  constructor(private readonly configService: ConfigService) {
     super({
-      clientID: configService.get<string>('GOOGLE_CLIENT_ID'),
-      clientSecret: configService.get<string>('GOOGLE_CLIENT_SECRET'),
-      callbackURL: configService.get<string>('GOOGLE_CALLBACK_URL'),
+      clientID,
+      clientSecret,
+      callbackURL,
       scope: ['email', 'profile'],
     });
   }
 
   async validate(
-    accessToken: string,
-    refreshToken: string,
+    _accessToken: string,
+    _refreshToken: string,
     profile: Profile,
-  ): Promise<GoogleUser> {
+    _done: VerifyCallback,
+  ): Promise<any> {
     try {
-      const { emails, name, photos } = profile;
-      
-      if (!emails?.[0]?.value) {
-        throw new Error('No email found in Google profile');
+      // Validate Google profile data
+      if (!profile.emails?.length) {
+        throw new Error(
+          'Google authentication failed: Email missing from profile',
+        );
       }
 
-      return {
-        email: emails[0].value,
-        firstName: name?.givenName,
-        lastName: name?.familyName,
-        picture: photos?.[0]?.value,
-        accessToken,
-        refreshToken,
-      };
-    } catch (error) {
-      this.logger.error(`Google validation error: ${error.message}`);
-      throw error;
+      const email = profile.emails[0].value;
+      if (!email) {
+        throw new Error('Google authentication failed: Invalid email');
+      }
+
+      return this.authService.validateOAuthUser({
+        email,
+        firstName: profile.name?.givenName || '',
+        lastName: profile.name?.familyName || '',
+        profilePicture: profile.photos?.[0]?.value || '',
+        providerId: profile.id,
+        provider: 'google',
+      });
+    } catch (err) {
+      console.error('Google authentication error:', err);
+      throw err;
     }
   }
 }

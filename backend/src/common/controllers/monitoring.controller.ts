@@ -3,13 +3,12 @@ import {
   Get,
   Query,
   UseGuards,
-  ValidationPipe,
   ParseIntPipe,
   DefaultValuePipe,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
-import { RolesGuard } from '../../auth/guards/roles.guard';
+import { RolesGuard } from '../../auth/guards/roles.guard'; // Ensure this path is correct or update it to the correct path
 import { Roles } from '../../auth/decorators/roles.decorator';
 import { MonitoringService } from '../services/monitoring.service';
 
@@ -59,7 +58,7 @@ export class MonitoringController {
   async getAPIMetrics(
     @Query('path') path?: string,
     @Query('method') method?: string,
-    @Query('timeframe', new DefaultValuePipe('1h')) timeframe: string,
+    @Query('timeframe', new DefaultValuePipe('1h')) timeframe?: string,
   ) {
     return this.monitoringService.getAPIMetrics(path, method, timeframe);
   }
@@ -69,7 +68,7 @@ export class MonitoringController {
   async getAlerts(
     @Query('status') status?: 'active' | 'resolved',
     @Query('severity') severity?: 'high' | 'medium' | 'low',
-    @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number,
+    @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit?: number,
   ) {
     return this.monitoringService.getAlerts({ status, severity, limit });
   }

@@ -1,17 +1,17 @@
-import { 
-  IsEmail, 
-  IsString, 
-  MinLength, 
-  IsOptional, 
+import {
+  IsEmail,
+  IsString,
+  MinLength,
+  IsOptional,
   Matches,
-  IsNotEmpty 
+  IsNotEmpty,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class RegisterDto {
   @ApiProperty({
     example: 'user@example.com',
-    description: 'User email address'
+    description: 'User email address',
   })
   @IsEmail({}, { message: 'Please provide a valid email address' })
   @IsNotEmpty({ message: 'Email is required' })
@@ -19,7 +19,7 @@ export class RegisterDto {
 
   @ApiProperty({
     example: 'Password123!',
-    description: 'User password (minimum 6 characters)'
+    description: 'User password (minimum 6 characters)',
   })
   @IsString({ message: 'Password must be a string' })
   @IsNotEmpty({ message: 'Password is required' })
@@ -27,14 +27,15 @@ export class RegisterDto {
   @Matches(
     /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]+$/,
     {
-      message: 'Password must contain at least one uppercase letter, one lowercase letter, one number and one special character'
-    }
+      message:
+        'Password must contain at least one uppercase letter, one lowercase letter, one number and one special character',
+    },
   )
   password: string;
 
   @ApiPropertyOptional({
     example: 'John',
-    description: 'User first name'
+    description: 'User first name',
   })
   @IsString({ message: 'First name must be a string' })
   @IsOptional()
@@ -42,7 +43,7 @@ export class RegisterDto {
 
   @ApiPropertyOptional({
     example: 'Doe',
-    description: 'User last name'
+    description: 'User last name',
   })
   @IsString({ message: 'Last name must be a string' })
   @IsOptional()

@@ -24,6 +24,26 @@ interface DatabaseConfig {
 }
 
 export default registerAs('database', (): DatabaseConfig => {
+  // Validate critical environment variables
+  const requiredEnvVars = [
+    'POSTGRES_HOST',
+    'POSTGRES_PORT',
+    'POSTGRES_USER',
+    'POSTGRES_PASSWORD',
+    'POSTGRES_DB',
+  ];
+
+  if (process.env.NODE_ENV === 'production') {
+    const missingVars = requiredEnvVars.filter(
+      (varName) => !process.env[varName],
+    );
+    if (missingVars.length > 0) {
+      throw new Error(
+        `Critical database configuration missing: ${missingVars.join(', ')}`,
+      );
+    }
+  }
+
   const config = {
     postgres: {
       host: process.env.POSTGRES_HOST ?? 'localhost',
@@ -39,6 +59,12 @@ export default registerAs('database', (): DatabaseConfig => {
       uri: process.env.REDIS_URI ?? 'redis://localhost:6379',
     },
   } satisfies DatabaseConfig;
+
+  // Additional validation
+  const isProd = process.env.NODE_ENV === 'production';
+  if (isProd && (!config.postgres.username || !config.postgres.password)) {
+    throw new Error('Database credentials missing in production environment');
+  }
 
   return config;
 });

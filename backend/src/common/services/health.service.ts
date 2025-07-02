@@ -1,13 +1,19 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { InjectRedis, Redis } from '@nestjs/redis';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Connection } from 'typeorm';
+import { Logger } from '@nestjs/common';
+import * as os from 'os';
+import { InjectRedis } from '@nestjs-modules/ioredis';
+import Redis from 'ioredis';
+import { Connection } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { S3 } from 'aws-sdk';
 import { Queue } from 'bull';
 import { InjectQueue } from '@nestjs/bull';
+import { exec } from 'child_process';
 
-@Injectable()
+export interface HealthStatus {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+
+  details?: any;
+}
 export class HealthService {
   private readonly logger = new Logger(HealthService.name);
   private readonly s3: S3;
@@ -61,11 +67,7 @@ export class HealthService {
     return { status, details };
   }
 
-  private async checkDatabase(): Promise<{
-    status: 'healthy' | 'unhealthy';
-    responseTime: number;
-    error?: string;
-  }> {
+  private async checkDatabase() {
     const startTime = Date.now();
     try {
       await this.connection.query('SELECT 1');
@@ -74,20 +76,18 @@ export class HealthService {
         responseTime: Date.now() - startTime,
       };
     } catch (error) {
-      this.logger.error(`Database health check failed: ${error.message}`);
+      this.logger.error(
+        `Database health check failed: ${(error as Error).message}`,
+      );
       return {
         status: 'unhealthy',
         responseTime: Date.now() - startTime,
-        error: error.message,
+        error: (error as Error).message,
       };
     }
   }
 
-  private async checkRedis(): Promise<{
-    status: 'healthy' | 'unhealthy';
-    responseTime: number;
-    error?: string;
-  }> {
+  private async checkRedis() {
     const startTime = Date.now();
     try {
       await this.redis.ping();
@@ -96,20 +96,18 @@ export class HealthService {
         responseTime: Date.now() - startTime,
       };
     } catch (error) {
-      this.logger.error(`Redis health check failed: ${error.message}`);
+      this.logger.error(
+        `Redis health check failed: ${(error as Error).message}`,
+      );
       return {
         status: 'unhealthy',
         responseTime: Date.now() - startTime,
-        error: error.message,
+        error: (error as Error).message,
       };
     }
   }
 
-  private async checkS3(): Promise<{
-    status: 'healthy' | 'unhealthy';
-    responseTime: number;
-    error?: string;
-  }> {
+  private async checkS3() {
     const startTime = Date.now();
     try {
       await this.s3.listBuckets().promise();
@@ -118,19 +116,16 @@ export class HealthService {
         responseTime: Date.now() - startTime,
       };
     } catch (error) {
-      this.logger.error(`S3 health check failed: ${error.message}`);
+      this.logger.error(`S3 health check failed: ${(error as Error).message}`);
       return {
         status: 'unhealthy',
         responseTime: Date.now() - startTime,
-        error: error.message,
+        error: (error as Error).message,
       };
     }
   }
 
-  private async checkQueues(): Promise<{
-    status: 'healthy' | 'degraded' | 'unhealthy';
-    details: Record<string, any>;
-  }> {
+  private async checkQueues() {
     const [fileQueueMetrics, emailQueueMetrics] = await Promise.all([
       this.getQueueMetrics(this.fileQueue),
       this.getQueueMetrics(this.emailQueue),
@@ -150,14 +145,7 @@ export class HealthService {
     };
   }
 
-  private async getQueueMetrics(queue: Queue): Promise<{
-    waiting: number;
-    active: number;
-    completed: number;
-    failed: number;
-    delayed: number;
-    processedPerSecond: number;
-  }> {
+  private async getQueueMetrics(queue: Queue) {
     const [waiting, active, completed, failed, delayed, metrics] =
       await Promise.all([
         queue.getWaitingCount(),
@@ -165,7 +153,7 @@ export class HealthService {
         queue.getCompletedCount(),
         queue.getFailedCount(),
         queue.getDelayedCount(),
-        queue.getMetrics(),
+        queue.getMetrics('completed'),
       ]);
 
     return {
@@ -174,19 +162,14 @@ export class HealthService {
       completed,
       failed,
       delayed,
-      processedPerSecond: metrics?.processedPerSecond || 0,
+      processedPerSecond: metrics
+        ? metrics.count /
+          ((metrics.meta.prevTS - metrics.meta.prevCount) / 1000)
+        : 0,
     };
   }
 
-  private async checkMemory(): Promise<{
-    status: 'healthy' | 'degraded' | 'unhealthy';
-    details: {
-      total: number;
-      free: number;
-      used: number;
-      percentage: number;
-    };
-  }> {
+  private async checkMemory() {
     const used = process.memoryUsage();
     const total = os.totalmem();
     const free = os.freemem();
@@ -206,15 +189,7 @@ export class HealthService {
     };
   }
 
-  private async checkDiskSpace(): Promise<{
-    status: 'healthy' | 'degraded' | 'unhealthy';
-    details: {
-      total: number;
-      free: number;
-      used: number;
-      percentage: number;
-    };
-  }> {
+  private async checkDiskSpace() {
     try {
       const { size, used } = await this.getDiskSpace();
       const percentage = (used / size) * 100;
@@ -236,20 +211,21 @@ export class HealthService {
         },
       };
     } catch (error) {
-      this.logger.error(`Disk space check failed: ${error.message}`);
+      this.logger.error(`Disk space check failed: ${(error as Error).message}`);
       return {
         status: 'unhealthy',
         details: {
-          error: error.message,
+          total: 0,
+          free: 0,
+          used: 0,
+          percentage: 0,
+          error: (error as Error).message,
         },
       };
     }
   }
 
-  private determineQueueHealth(
-    fileMetrics: any,
-    emailMetrics: any,
-  ): 'healthy' | 'degraded' | 'unhealthy' {
+  private determineQueueHealth(fileMetrics: any, emailMetrics: any) {
     const failureThreshold = 0.1; // 10% failure rate
     const delayThreshold = 100; // 100 delayed jobs
 
@@ -279,9 +255,7 @@ export class HealthService {
     return 'healthy';
   }
 
-  private determineOverallStatus(
-    details: Record<string, any>,
-  ): 'healthy' | 'degraded' | 'unhealthy' {
+  private determineOverallStatus(details: Record<string, any>) {
     const statuses = Object.values(details)
       .filter((detail) => detail.status)
       .map((detail) => detail.status);
@@ -297,38 +271,34 @@ export class HealthService {
     return 'healthy';
   }
 
-  private async storeHealthCheck(
-    status: string,
-    details: Record<string, any>,
-  ): Promise<void> {
+  private getDiskSpace(): Promise<{ size: number; used: number }> {
+    return new Promise((resolve, reject) => {
+      exec('df -k --output=size,used /', (error: any, stdout: string) => {
+        if (error) {
+          return reject(error);
+        }
+        const lines = stdout.trim().split('\n');
+        const [size, used] = lines[1].split(/\s+/).map(Number);
+        resolve({
+          size: size * 1024,
+          used: used * 1024,
+        });
+      });
+    });
+  }
+
+  private async storeHealthCheck(status: string, details: Record<string, any>) {
     await this.redis.zadd(
       'health:checks',
       Date.now(),
       JSON.stringify({
-        status,
-        details,
+        status: status,
+        details: details,
         timestamp: new Date().toISOString(),
       }),
     );
 
     // Keep only last 1000 health checks
     await this.redis.zremrangebyrank('health:checks', 0, -1001);
-  }
-
-  async getHealthHistory(limit = 100): Promise<
-    Array<{
-      status: string;
-      details: Record<string, any>;
-      timestamp: string;
-    }>
-  > {
-    const checks = await this.redis.zrevrange(
-      'health:checks',
-      0,
-      limit - 1,
-      'WITHSCORES',
-    );
-
-    return checks.map((check) => JSON.parse(check));
   }
 }

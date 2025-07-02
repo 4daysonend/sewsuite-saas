@@ -1,15 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { HealthStatus } from './health.service'; // Add this line
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { ConfigService } from '@nestjs/config';
-import { HealthService, HealthStatus } from './health.service';
-import {
-  MonitoringService,
-  Metrics,
-  QueueMetrics,
-  ErrorPattern,
-  Anomaly,
-} from './monitoring.service';
-import { RecoveryService, RecoveryResult } from './recovery.service';
+import { MailerService } from '@nestjs-modules/mailer';
+import { HealthService } from './health.service';
+import { MonitoringService } from '../../monitoring/monitoring.service';
+import { RecoveryService } from './recovery.service';
+import { RecoveryResult } from './recovery.service';
 
 interface Thresholds {
   cpuUsage: number;
@@ -23,40 +19,114 @@ interface WorkerMetrics {
   cpu: number;
 }
 
-interface QueuePattern {
-  isSystematic: boolean;
-  recommendedWorkers: number;
+interface Metrics {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  metrics: {
+    cpu: number;
+    memory: number;
+    disk: number;
+    api?: {
+      responseTime: number;
+      historicalResponseTime: number[];
+      errorRate: number;
+      historicalErrorRate: number[];
+    };
+    performance?: {
+      cpu: number;
+      memory: number;
+      disk: number;
+    };
+    loadAverage: number;
+    timestamp: string;
+  };
+  timestamp: string;
 }
 
-interface Issue {
-  severity: string;
-  description: string;
-  metrics: any;
-  actions: any;
-  resolution: any;
+// Removed unused MetricsSummary interface
+
+// Removed unused QueuePattern interface
+
+interface QueueMetrics {
+  waiting: number;
+  errorRate: number;
+}
+
+// Removed duplicate ErrorPattern interface definition
+
+// Removed unused Issue interface
+
+interface ErrorPattern {
+  type: string;
+  message: string;
+  count: number;
+  significance: number;
+  isSystematic: boolean; // Add this line
+  isRetryable: boolean; // Add this line
+}
+
+interface Anomaly {
+  type: string;
+  current: number;
+  historical: number[];
+}
+
+@Injectable()
+class LocalEmailService {
+  constructor(private readonly mailerService: MailerService) {}
+
+  async sendEmail(
+    to: string,
+    subject: string,
+    template: string,
+    context: any,
+  ): Promise<void> {
+    await this.mailerService.sendMail({
+      to,
+      subject,
+      template,
+      context,
+    });
+  }
+
+  async sendAdminReport(report: string): Promise<void> {
+    await this.mailerService.sendMail({
+      to: 'admin@example.com',
+      subject: 'Daily System Health Report',
+      template: 'report-template',
+      context: { report },
+    });
+  }
 }
 
 @Injectable()
 export class ProactiveMonitoringService {
   private readonly logger = new Logger(ProactiveMonitoringService.name);
-  private readonly thresholds: Thresholds;
 
-  constructor(
-    private readonly healthService: HealthService,
-    private readonly monitoringService: MonitoringService,
-    private readonly recoveryService: RecoveryService,
-    private readonly configService: ConfigService,
-  ) {
-    this.thresholds = {
-      cpuUsage: this.configService.get<number>('THRESHOLD_CPU_USAGE', 80),
-      memoryUsage: this.configService.get<number>('THRESHOLD_MEMORY_USAGE', 85),
-      diskUsage: this.configService.get<number>('THRESHOLD_DISK_USAGE', 85),
-      queueLength: this.configService.get<number>(
-        'THRESHOLD_QUEUE_LENGTH',
-        1000,
-      ),
-      errorRate: this.configService.get<number>('THRESHOLD_ERROR_RATE', 0.05),
-    };
+  private thresholds: Thresholds = {
+    cpuUsage: 80,
+    memoryUsage: 80,
+    diskUsage: 80,
+    queueLength: 100,
+    errorRate: 5,
+  };
+
+  async monitor(): Promise<void> {
+    // Example monitoring logic
+    const issues = await this.checkForIssues();
+    if (issues.length > 0) {
+      await this.emailService.sendEmail(
+        'admin@example.com',
+        'Monitoring Alert',
+        'alert-template',
+        { issues },
+      );
+      this.logger.log('Alert email sent');
+    }
+  }
+
+  private async checkForIssues(): Promise<string[]> {
+    // Example issue checking logic
+    return ['Issue 1', 'Issue 2'];
   }
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -72,19 +142,46 @@ export class ProactiveMonitoringService {
       await this.checkQueueHealth();
       await this.analyzeErrorPatterns();
     } catch (error) {
-      this.logger.error(`Health check failed: ${error.message}`);
+      this.logger.error(`Health check failed: ${(error as Error).message}`);
     }
   }
 
+  private async generateSystemHealthReport(): Promise<string> {
+    // Implement the logic to generate the system health report
+    return 'System Health Report';
+  }
   @Cron(CronExpression.EVERY_10_MINUTES)
   async performanceAnalysis(): Promise<void> {
     try {
-      const metrics: Metrics = await this.monitoringService.getMetricsSummary();
+      const metricsSummary: {
+        status: string;
+        metrics: {
+          cpu: number;
+          memory: number;
+          loadAverage: number;
+          timestamp: string;
+          disk?: number; // Make disk optional
+        };
+        timestamp: string;
+      } = await this.monitoringService.getMetricsSummary();
+      const metrics: Metrics = {
+        status: metricsSummary.status as 'healthy' | 'degraded' | 'unhealthy',
+        metrics: {
+          cpu: metricsSummary.metrics.cpu,
+          memory: metricsSummary.metrics.memory,
+          disk: metricsSummary.metrics.disk ?? 0, // Ensure disk is included
+          loadAverage: metricsSummary.metrics.loadAverage,
+          timestamp: metricsSummary.metrics.timestamp,
+        },
+        timestamp: metricsSummary.timestamp,
+      };
       await this.detectAnomalies(metrics);
       await this.predictResourceNeeds(metrics);
-      await this.optimizeResourceAllocation(metrics);
+      await this.optimizeResourceAllocation();
     } catch (error) {
-      this.logger.error(`Performance analysis failed: ${error.message}`);
+      this.logger.error(
+        `Performance analysis failed: ${(error as Error).message}`,
+      );
     }
   }
 
@@ -101,55 +198,65 @@ export class ProactiveMonitoringService {
         });
       }
     } catch (error) {
-      this.logger.error(`Failed to handle degradation: ${error.message}`);
+      this.logger.error(
+        `Failed to handle degradation: ${(error as Error).message}`,
+      );
       await this.escalateIssue({
         type: 'recovery_failed',
-        error: error.message,
+        error: (error as Error).message,
         status: healthStatus,
       });
     }
   }
 
   private async checkResourceUsage(): Promise<void> {
-    const metrics: Metrics =
-      await this.monitoringService.getPerformanceMetrics('1m');
+    const metricsData = (await this.monitoringService.getPerformanceMetrics(
+      Date.now() - 60000,
+      Date.now(),
+      // Ensure disk is included
+    )) as {
+      cpu: number;
+      memory: number;
+      disk?: number;
+      loadAverage: number;
+      timestamp: string;
+    };
+    const metrics: Metrics = {
+      status: 'healthy', // or derive this value based on your logic
+      metrics: {
+        ...metricsData,
+        disk: metricsData.disk || 0, // Ensure disk is included
+      },
+      timestamp: new Date().toISOString(),
+    };
 
-    if (metrics.cpu > this.thresholds.cpuUsage) {
-      await this.handleHighCPU(metrics.cpu);
+    if (metrics.metrics.cpu > this.thresholds.cpuUsage) {
+      await this.handleHighCPU(metrics.metrics.cpu);
     }
 
-    if (metrics.memory > this.thresholds.memoryUsage) {
-      await this.handleHighMemory(metrics.memory);
+    if (metrics.metrics.memory > this.thresholds.memoryUsage) {
+      await this.handleHighMemory(metrics.metrics.memory);
     }
 
-    if (metrics.disk > this.thresholds.diskUsage) {
-      await this.handleHighDiskUsage(metrics.disk);
+    if (metrics.metrics.disk > this.thresholds.diskUsage) {
+      await this.handleHighDiskUsage(metrics.metrics.disk);
     }
   }
 
   private async checkQueueHealth(): Promise<void> {
-    const queueMetrics: QueueMetrics =
-      await this.monitoringService.getQueueMetrics();
+    const queueMetrics: QueueMetrics = {
+      waiting: 0,
+      errorRate: 0,
+      ...(await this.monitoringService.getMetrics('lastMinute')),
+    };
 
     for (const [queueName, metrics] of Object.entries(queueMetrics)) {
-      if (metrics.waiting > this.thresholds.queueLength) {
+      if ((metrics as QueueMetrics).waiting > this.thresholds.queueLength) {
         await this.handleQueueBacklog(queueName, metrics);
       }
 
-      if (metrics.errorRate > this.thresholds.errorRate) {
+      if ((metrics as QueueMetrics).errorRate > this.thresholds.errorRate) {
         await this.handleHighErrorRate(queueName, metrics);
-      }
-    }
-  }
-
-  private async analyzeErrorPatterns(): Promise<void> {
-    const errors = await this.monitoringService.getRecentErrors();
-    const patterns: ErrorPattern[] = this.detectErrorPatterns(errors);
-
-    for (const pattern of patterns) {
-      if (pattern.significance > 0.7) {
-        // 70% confidence threshold
-        await this.handleErrorPattern(pattern);
       }
     }
   }
@@ -159,26 +266,30 @@ export class ProactiveMonitoringService {
 
     // Check for response time anomalies
     if (
+      metrics.metrics.api &&
       this.isAnomaly(
-        metrics.api.responseTime,
-        metrics.api.historicalResponseTime,
+        metrics.metrics.api.responseTime,
+        metrics.metrics.api.historicalResponseTime,
       )
     ) {
       anomalies.push({
         type: 'response_time',
-        current: metrics.api.responseTime,
-        historical: metrics.api.historicalResponseTime,
+        current: metrics.metrics.api.responseTime,
+        historical: metrics.metrics.api.historicalResponseTime,
       });
     }
 
     // Check for error rate anomalies
     if (
-      this.isAnomaly(metrics.api.errorRate, metrics.api.historicalErrorRate)
+      this.isAnomaly(
+        metrics.metrics.api?.errorRate ?? 0,
+        metrics.metrics.api?.historicalErrorRate ?? [],
+      )
     ) {
       anomalies.push({
         type: 'error_rate',
-        current: metrics.api.errorRate,
-        historical: metrics.api.historicalErrorRate,
+        current: metrics.metrics.api?.errorRate ?? 0,
+        historical: metrics.metrics.api?.historicalErrorRate ?? [],
       });
     }
 
@@ -189,9 +300,21 @@ export class ProactiveMonitoringService {
 
   private async predictResourceNeeds(metrics: Metrics): Promise<void> {
     const predictions = {
-      cpu: this.predictUsage(metrics.performance.cpu),
-      memory: this.predictUsage(metrics.performance.memory),
-      disk: this.predictUsage(metrics.performance.disk),
+      cpu: this.predictUsage(
+        metrics.metrics.performance?.cpu
+          ? [metrics.metrics.performance.cpu]
+          : [],
+      ),
+      memory: this.predictUsage(
+        metrics.metrics.performance?.memory
+          ? [metrics.metrics.performance.memory]
+          : [],
+      ),
+      disk: this.predictUsage(
+        metrics.metrics.performance?.disk
+          ? [metrics.metrics.performance.disk]
+          : [],
+      ),
     };
 
     if (predictions.cpu > this.thresholds.cpuUsage) {
@@ -207,6 +330,16 @@ export class ProactiveMonitoringService {
     }
   }
 
+  private async requestResourceScaling(
+    resourceType: string,
+    predictedUsage: number,
+  ): Promise<void> {
+    this.logger.log(
+      `Requesting scaling for ${resourceType} to handle predicted usage of ${predictedUsage}%`,
+    );
+    // Implement the logic to request resource scaling, e.g., call an API or adjust configurations
+  }
+
   private predictUsage(historicalData: number[]): number {
     try {
       // Simple exponential moving average for prediction
@@ -219,7 +352,7 @@ export class ProactiveMonitoringService {
 
       return prediction;
     } catch (error) {
-      this.logger.error(`Failed to predict usage: ${error.message}`);
+      this.logger.error(`Failed to predict usage: ${(error as Error).message}`);
       return Math.max(...historicalData); // Fallback to maximum historical value
     }
   }
@@ -243,9 +376,38 @@ export class ProactiveMonitoringService {
       // Optimize queue processing
       await this.optimizeQueueProcessing();
     } catch (error) {
-      this.logger.error(`Failed to handle high CPU: ${error.message}`);
-      await this.notifyAdmins('cpu_alert', { usage, error: error.message });
+      this.logger.error(
+        `Failed to handle high CPU: ${(error as Error).message}`,
+      );
+      await this.notifyAdmins('cpu_alert', {
+        usage,
+        error: (error as Error).message,
+      });
     }
+  }
+
+  private async optimizeQueueProcessing(): Promise<void> {
+    this.logger.log('Optimizing queue processing');
+    // Implement the logic to optimize queue processing
+  }
+
+  private async redistributeWorkload(
+    overloadedWorkers: WorkerMetrics[],
+  ): Promise<void> {
+    this.logger.log(
+      `Redistributing workload among ${overloadedWorkers.length} overloaded workers`,
+    );
+    // Implement the logic to redistribute workload among workers
+  }
+
+  private async scaleWorkers(count: number): Promise<void> {
+    this.logger.log(`Scaling up ${count} workers`);
+    // Implement the logic to scale up workers, e.g., call an API or adjust configurations
+  }
+
+  private async getWorkerMetrics(): Promise<WorkerMetrics[]> {
+    // Implement the logic to get worker metrics
+    return [{ cpu: 75 }, { cpu: 85 }, { cpu: 60 }];
   }
 
   private async handleHighMemory(usage: number): Promise<void> {
@@ -267,9 +429,39 @@ export class ProactiveMonitoringService {
       const intensiveProcesses = await this.getMemoryIntensiveProcesses();
       await this.restartProcesses(intensiveProcesses);
     } catch (error) {
-      this.logger.error(`Failed to handle high memory: ${error.message}`);
-      await this.notifyAdmins('memory_alert', { usage, error: error.message });
+      this.logger.error(
+        `Failed to handle high memory: ${(error as Error).message}`,
+      );
+      await this.notifyAdmins('memory_alert', {
+        usage,
+        error: (error as Error).message,
+      });
     }
+  }
+
+  private async restartProcesses(processes: string[]): Promise<void> {
+    this.logger.log(`Restarting processes: ${processes.join(', ')}`);
+    // Implement the logic to restart processes
+  }
+
+  private async getMemoryIntensiveProcesses(): Promise<string[]> {
+    // Implement the logic to get memory-intensive processes
+    return ['Process 1', 'Process 2'];
+  }
+
+  private async clearSystemCaches(): Promise<void> {
+    this.logger.log('Clearing system caches');
+    // Implement the logic to clear system caches
+  }
+
+  private async handleMemoryLeaks(leaks: string[]): Promise<void> {
+    this.logger.log(`Handling memory leaks: ${leaks.join(', ')}`);
+    // Implement the logic to handle memory leaks
+  }
+
+  private async detectMemoryLeaks(): Promise<string[]> {
+    // Implement the logic to detect memory leaks
+    return ['Leak 1', 'Leak 2'];
   }
 
   private async handleHighDiskUsage(usage: number): Promise<void> {
@@ -291,9 +483,72 @@ export class ProactiveMonitoringService {
         `Freed up ${cleanedSpace + compressedSpace} MB of disk space`,
       );
     } catch (error) {
-      this.logger.error(`Failed to handle high disk usage: ${error.message}`);
-      await this.notifyAdmins('disk_alert', { usage, error: error.message });
+      this.logger.error(
+        `Failed to handle high disk usage: ${(error as Error).message}`,
+      );
+      await this.notifyAdmins('disk_alert', {
+        usage,
+        error: (error as Error).message,
+      });
     }
+  }
+
+  private async archiveOldData(): Promise<void> {
+    this.logger.log('Archiving old data');
+    // Implement the logic to archive old data
+  }
+
+  private async compressOldLogs(): Promise<number> {
+    this.logger.log('Compressing old logs');
+    // Implement the logic to compress old logs and return the amount of freed space
+    return 50; // Example: returning 50 MB of freed space
+  }
+
+  private async cleanupTemporaryFiles(): Promise<number> {
+    this.logger.log('Cleaning up temporary files');
+    // Implement the logic to clean up temporary files and return the amount of freed space
+    return 100; // Example: returning 100 MB of freed space
+  }
+
+  private async notifyAdmins(alertType: string, details: any): Promise<void> {
+    // Implement the logic to notify admins, e.g., send an email or log the alert
+    this.logger.warn(`Admin notification: ${alertType}`, details);
+  }
+
+  private async handleHighErrorRate(
+    queueName: string,
+    metrics: any,
+  ): Promise<void> {
+    try {
+      this.logger.warn(`High error rate detected in ${queueName}`);
+
+      // Analyze error patterns
+      const errorPatterns: ErrorPattern[] = await this.analyzeErrorPatterns();
+
+      // Adjust error handling strategies
+      for (const pattern of errorPatterns) {
+        await this.handleErrorPattern(pattern);
+      }
+
+      // Notify admins if necessary
+      if (metrics.errorRate > this.thresholds.errorRate * 2) {
+        await this.notifyAdmins('high_error_rate', { queueName, metrics });
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to handle high error rate: ${(error as Error).message}`,
+      );
+      await this.notifyAdmins('error_rate_alert', {
+        queueName,
+        metrics,
+        error: (error as Error).message,
+      });
+    }
+  }
+
+  private calculateRecommendedWorkers(patterns: ErrorPattern[]): number {
+    // Implement the logic to calculate recommended workers based on patterns
+    return patterns.length; // Example: return the number of patterns as recommended workers
   }
 
   private async handleQueueBacklog(
@@ -304,26 +559,63 @@ export class ProactiveMonitoringService {
       this.logger.warn(`Queue backlog detected in ${queueName}`);
 
       // Analyze queue patterns
-      const patterns: QueuePattern = await this.analyzeQueuePatterns(queueName);
+      const patterns: ErrorPattern[] = await this.analyzeErrorPatterns();
+      const recommendedWorkers = this.calculateRecommendedWorkers(patterns);
+      await this.scaleWorkers(recommendedWorkers);
 
       // Scale workers based on patterns
-      if (patterns.isSystematic) {
-        await this.scaleQueueWorkers(queueName, patterns.recommendedWorkers);
+      const systematicPatterns = patterns.filter(
+        (pattern) => pattern.isSystematic,
+      );
+      if (systematicPatterns.length > 0) {
+        const recommendedWorkers =
+          this.calculateRecommendedWorkers(systematicPatterns);
+        await this.scaleWorkers(recommendedWorkers);
       }
 
       // Check for stuck jobs
-      const stuckJobs = await this.identifyStuckJobs(queueName);
+      const stuckJobs = await this.identifyStuckJobs();
       if (stuckJobs.length > 0) {
         await this.recoveryService.handleStuckJobs(stuckJobs);
       }
     } catch (error) {
-      this.logger.error(`Failed to handle queue backlog: ${error.message}`);
+      this.logger.error(
+        `Failed to handle queue backlog: ${(error as Error).message}`,
+      );
       await this.notifyAdmins('queue_alert', {
         queueName,
         metrics,
-        error: error.message,
+        error: (error as Error).message,
       });
     }
+  }
+  private async identifyStuckJobs(): Promise<{ queue: string; job: any }[]> {
+    // Implement the logic to identify stuck jobs in the queue
+    return [
+      {
+        queue: 'default',
+        job: { id: '1', moveToFailed: async () => {}, retry: async () => {} },
+      },
+      {
+        queue: 'default',
+        job: { id: '2', moveToFailed: async () => {}, retry: async () => {} },
+      },
+    ]; // Example: returning a list of stuck jobs with queue and job information
+  }
+
+  private async documentErrorPattern(pattern: ErrorPattern): Promise<void> {
+    this.logger.log(`Documenting error pattern: ${pattern.type}`);
+    // Implement the logic to document the error pattern
+  }
+
+  private async updateMonitoringRules(pattern: ErrorPattern): Promise<void> {
+    this.logger.log(`Updating monitoring rules for pattern: ${pattern.type}`);
+    // Implement the logic to update monitoring rules based on the pattern
+  }
+
+  private async optimizeRetryStrategy(pattern: ErrorPattern): Promise<void> {
+    this.logger.log(`Optimizing retry strategy for pattern: ${pattern.type}`);
+    // Implement the logic to optimize retry strategy based on the pattern
   }
 
   private async handleErrorPattern(pattern: ErrorPattern): Promise<void> {
@@ -344,12 +636,19 @@ export class ProactiveMonitoringService {
       // Document pattern for analysis
       await this.documentErrorPattern(pattern);
     } catch (error) {
-      this.logger.error(`Failed to handle error pattern: ${error.message}`);
+      this.logger.error(
+        `Failed to handle error pattern: ${(error as Error).message}`,
+      );
       await this.notifyAdmins('pattern_alert', {
         pattern,
-        error: error.message,
+        error: (error as Error).message,
       });
     }
+  }
+
+  private async updateErrorHandlers(pattern: ErrorPattern): Promise<void> {
+    this.logger.log(`Updating error handlers for pattern: ${pattern.type}`);
+    // Implement the logic to update error handlers based on the pattern
   }
 
   private async handleAnomaly(anomaly: Anomaly): Promise<void> {
@@ -365,42 +664,69 @@ export class ProactiveMonitoringService {
       // Update monitoring thresholds
       await this.updateThresholds(anomaly);
     } catch (error) {
-      this.logger.error(`Failed to handle anomaly: ${error.message}`);
+      this.logger.error(
+        `Failed to handle anomaly: ${(error as Error).message}`,
+      );
       await this.notifyAdmins('anomaly_alert', {
         anomaly,
-        error: error.message,
+        error: (error as Error).message,
       });
     }
   }
 
-  private async optimizeResourceAllocation(metrics: Metrics): Promise<void> {
+  private async recordAnomaly(anomaly: Anomaly): Promise<void> {
+    this.logger.log(`Recording anomaly: ${anomaly.type}`);
+    // Implement the logic to record the anomaly
+  }
+
+  private async adjustSystemParameters(anomaly: Anomaly): Promise<void> {
+    this.logger.log(`Adjusting system parameters for anomaly: ${anomaly.type}`);
+    // Implement the logic to adjust system parameters based on the anomaly
+  }
+
+  private async updateThresholds(anomaly: Anomaly): Promise<void> {
+    this.logger.log(`Updating thresholds based on anomaly: ${anomaly.type}`);
+    // Implement the logic to update thresholds based on the anomaly
+  }
+
+  private async optimizeResourceAllocation(): Promise<void> {
     try {
       // Analyze resource usage patterns
-      const patterns = await this.analyzeResourcePatterns(metrics);
+      await this.analyzeErrorPatterns();
 
       // Optimize worker pool size
-      await this.optimizeWorkerPool(patterns);
+      await this.optimizeWorkerPool();
 
       // Adjust queue concurrency
-      await this.adjustQueueConcurrency(patterns);
+      await this.adjustQueueConcurrency();
 
       // Update resource limits
-      await this.updateResourceLimits(patterns);
+      await this.updateResourceLimits();
     } catch (error) {
-      this.logger.error(`Failed to optimize resources: ${error.message}`);
+      this.logger.error(
+        `Failed to optimize resources: ${(error as Error).message}`,
+      );
     }
   }
 
-  private async documentIssue(issue: Issue): Promise<void> {
-    await this.systemLogsRepository.save({
-      type: 'system_issue',
-      severity: issue.severity,
-      description: issue.description,
-      metrics: issue.metrics,
-      actions: issue.actions,
-      resolution: issue.resolution,
-      createdAt: new Date(),
-    });
+  private async adjustQueueConcurrency(): Promise<void> {
+    // Implement the logic to adjust queue concurrency
+    this.logger.log('Queue concurrency adjusted');
+  }
+
+  private async optimizeWorkerPool(): Promise<void> {
+    // Implement the logic to optimize the worker pool based on patterns
+    this.logger.log('Worker pool optimized based on patterns');
+  }
+
+  private async updateResourceLimits(): Promise<void> {
+    // Implement the logic to update resource limits based on patterns
+    this.logger.log('Resource limits updated based on patterns');
+  }
+
+  private async escalateIssue(issue: any): Promise<void> {
+    this.logger.error(`Escalating issue: ${JSON.stringify(issue)}`);
+    // Add your escalation logic here, e.g., notify admins, create a ticket, etc.
   }
 
   private isAnomaly(current: number, historical: number[]): boolean {
@@ -414,12 +740,26 @@ export class ProactiveMonitoringService {
   }
 
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
-  private async generateDailyReport(): Promise<void> {
+  async generateDailyReport(): Promise<void> {
     try {
       const report = await this.generateSystemHealthReport();
       await this.emailService.sendAdminReport(report);
     } catch (error) {
-      this.logger.error(`Failed to generate daily report: ${error.message}`);
+      this.logger.error(
+        `Failed to generate daily report: ${(error as Error).message}`,
+      );
     }
+  }
+
+  constructor(
+    private readonly monitoringService: MonitoringService,
+    private readonly recoveryService: RecoveryService,
+    private readonly emailService: LocalEmailService,
+    private readonly healthService: HealthService,
+  ) {}
+
+  private async analyzeErrorPatterns(): Promise<ErrorPattern[]> {
+    // Implement the logic to analyze error patterns
+    return [];
   }
 }

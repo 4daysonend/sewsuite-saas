@@ -108,25 +108,25 @@ const baseConfig = {
   },
   database: {
     postgres: {
-      host: process.env.POSTGRES_HOST,
+      host: process.env.POSTGRES_HOST ?? '',
       port: parseInt(process.env.POSTGRES_PORT ?? '5432', 10),
-      username: process.env.POSTGRES_USER,
-      password: process.env.POSTGRES_PASSWORD,
-      database: process.env.POSTGRES_DB,
+      username: process.env.POSTGRES_USER ?? '',
+      password: process.env.POSTGRES_PASSWORD ?? '',
+      database: process.env.POSTGRES_DB ?? '',
     },
     mongodb: {
-      uri: process.env.MONGODB_URI,
+      uri: process.env.MONGODB_URI ?? '',
     },
   },
   redis: {
-    host: process.env.REDIS_HOST,
+    host: process.env.REDIS_HOST ?? '',
     port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
     password: process.env.REDIS_PASSWORD,
     db: parseInt(process.env.REDIS_DB ?? '0', 10),
   },
   queue: {
     redis: {
-      host: process.env.QUEUE_REDIS_HOST,
+      host: process.env.QUEUE_REDIS_HOST ?? '',
       port: parseInt(process.env.QUEUE_REDIS_PORT ?? '6379', 10),
       password: process.env.QUEUE_REDIS_PASSWORD,
       db: parseInt(process.env.QUEUE_REDIS_DB ?? '1', 10),
@@ -229,18 +229,31 @@ const environmentConfigs = {
 } as const;
 
 export const configuration = () => {
-  const environment = (process.env.NODE_ENV ?? 'development') as keyof typeof environmentConfigs;
+  const environment = (process.env.NODE_ENV ??
+    'development') as keyof typeof environmentConfigs;
   return environmentConfigs[environment];
 };
 
-export const databaseConfig = registerAs('database', () => configuration().database);
+export const databaseConfig = registerAs(
+  'database',
+  () => configuration().database,
+);
 export const redisConfig = registerAs('redis', () => configuration().redis);
 export const queueConfig = registerAs('queue', () => configuration().queue);
 export const authConfig = registerAs('auth', () => configuration().auth);
 export const awsConfig = registerAs('aws', () => configuration().aws);
 export const emailConfig = registerAs('email', () => configuration().email);
-export const securityConfig = registerAs('security', () => configuration().security);
+export const securityConfig = registerAs(
+  'security',
+  () => configuration().security,
+);
 export const uploadConfig = registerAs('upload', () => configuration().upload);
-export const monitoringConfig = registerAs('monitoring', () => configuration().monitoring);
+export const monitoringConfig = registerAs(
+  'monitoring',
+  () => configuration().monitoring,
+);
 export const cacheConfig = registerAs('cache', () => configuration().cache);
-export const loggingConfig = registerAs('logging', () => configuration().logging);
+export const loggingConfig = registerAs(
+  'logging',
+  () => configuration().logging,
+);
