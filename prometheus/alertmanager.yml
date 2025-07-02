@@ -1,0 +1,91 @@
+global:
+  resolve_timeout: 5m
+  smtp_from: 'alertmanager@sewsuite.com'
+  smtp_smarthost: 'smtp.sendgrid.net:587'
+  smtp_auth_username: 'apikey'
+  smtp_auth_password: '${SMTP_PASSWORD}'
+  smtp_require_tls: true
+
+templates:
+  - '/etc/alertmanager/template/*.tmpl'
+
+route:
+  group_by: ['alertname', 'service']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'engineering-team'
+  routes:
+    # Critical alerts go directly to the on-call team
+    - match:
+        severity: critical
+      receiver: 'on-call-team'
+      continue: true
+      
+    # Email-specific alerts
+    - match:
+        service: email
+      receiver: 'email-service-team'
+      continue: true
+
+    # Payment-specific alerts
+    - match:
+        service: payments
+      receiver: 'payments-team'
+      continue: true
+    
+    # Business impact alerts get sent to management too
+    - match:
+        business_impact: high
+      receiver: 'management-team'
+      continue: true
+
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'service']
+
+receivers:
+  - name: 'engineering-team'
+    email_configs:
+      - to: 'engineering@sewsuite.com'
+        send_resolved: true
+        headers:
+          subject: '[ALERT] {{ .GroupLabels.alertname }}'
+
+  - name: 'on-call-team'
+    email_configs:
+      - to: 'oncall@sewsuite.com'
+        send_resolved: true
+        headers:
+          subject: '[CRITICAL] {{ .GroupLabels.alertname }}'
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_KEY}'
+        description: '{{ .CommonAnnotations.summary }}'
+        details:
+          severity: '{{ .CommonLabels.severity }}'
+          service: '{{ .CommonLabels.service }}'
+          description: '{{ .CommonAnnotations.description }}'
+
+  - name: 'email-service-team'
+    email_configs:
+      - to: 'email-team@sewsuite.com'
+        send_resolved: true
+        headers:
+          subject: '[EMAIL-SERVICE] {{ .GroupLabels.alertname }}'
+
+  - name: 'payments-team'
+    email_configs:
+      - to: 'payments@sewsuite.com'
+        send_resolved: true
+        headers:
+          subject: '[PAYMENTS] {{ .GroupLabels.alertname }}'
+
+  - name: 'management-team'
+    email_configs:
+      - to: 'management@sewsuite.com'
+        send_resolved: true
+        headers:
+          subject: '[BUSINESS IMPACT] {{ .GroupLabels.alertname }}'

@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     // Module and Build Configuration
-    "module": "commonjs",
+    "module": "CommonJS",
     "target": "ES2022",
     "lib": ["ES2022"],
     "outDir": "./dist",
@@ -20,7 +20,7 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
-    "verbatimModuleSyntax": true,
+    "verbatimModuleSyntax": false,
     
     // Type Checking and Safety
     "strict": true,
@@ -55,12 +55,13 @@
       "@common/*": ["src/common/*"],
       "@config/*": ["src/config/*"],
       "@modules/*": ["src/modules/*"],
-      "@utils/*": ["src/utils/*"]
+      "@utils/*": ["src/utils/*"],
+      "*": ["node_modules/*"]
     }
   },
   "include": [
     "src/**/*",
-    "test/**/*"
+    "data-source.ts"
   ],
   "exclude": [
     "node_modules",

@@ -28,6 +28,14 @@ export interface Alert {
       count: number;
       averageResponseTime: number;
     }>;
+
+    // Add the new properties here
+    cpuUsage: number;
+    memoryUsage: number;
+    activeUsers: number;
+    requestsPerMinute: number;
+    averageResponseTime: number;
+    errorRate: number;
   }
   
   export interface QueueMetrics {
@@ -52,10 +60,45 @@ export interface Alert {
   }
   
   export interface SystemMetrics {
-    status: SystemStatus;
-    performance: SystemPerformance;
-    queues: QueueMetrics;
-    api: ApiMetrics;
-    alerts: Alert[];
+    cpuUsage: number;
+    memoryUsage: number;
+    activeUsers: number;
+    requestsPerMinute: number;
+    averageResponseTime: number;
+    errorRate: number;
+  }
+
+  export interface MetricTimeSeriesPoint {
     timestamp: string;
+    value: number;
+  }
+
+  export type ErrorLogLevel = 'error' | 'warning' | 'info';
+
+  export interface ErrorLogEntry {
+    id: string;
+    timestamp: string;
+    level: ErrorLogLevel;
+    message: string;
+    stack?: string;
+    userId?: string;
+    path: string;
+    metadata?: Record<string, any>;
+  }
+
+  export type AlertLevel = 'critical' | 'high' | 'medium' | 'low';
+
+  export interface SystemAlert {
+    id: string;
+    timestamp: string;
+    level: AlertLevel;
+    title: string;
+    message: string;
+    metric: string;
+    thresholdValue: number;
+    currentValue: number;
+    isResolved: boolean;
+    resolvedAt?: string;
+    resolvedBy?: string;
+    resolutionNotes?: string;
   }

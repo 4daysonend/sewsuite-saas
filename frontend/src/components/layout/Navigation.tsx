@@ -2,16 +2,46 @@
 import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import { UserRole } from '../../types/user';
 
 const Navigation: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { user, isAuthenticated, logout, hasRole } = useAuth();
   const location = useLocation();
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  const isActive = (path: string) => {
-    return location.pathname === path;
-  };
+  // Navigation items based on role
+  const navigationItems = [
+    // Items for all authenticated users
+    ...(isAuthenticated
+      ? [
+          { name: 'Dashboard', path: '/dashboard', roles: [UserRole.CLIENT, UserRole.TAILOR, UserRole.ADMIN] },
+          { name: 'Orders', path: '/orders', roles: [UserRole.CLIENT, UserRole.TAILOR, UserRole.ADMIN] },
+          { name: 'Files', path: '/files', roles: [UserRole.CLIENT, UserRole.TAILOR, UserRole.ADMIN] },
+        ]
+      : []),
+
+    // Tailor-specific items
+    ...(hasRole(UserRole.TAILOR)
+      ? [
+          { name: 'Projects', path: '/projects', roles: [UserRole.TAILOR, UserRole.ADMIN] },
+          { name: 'Measurements', path: '/measurements', roles: [UserRole.TAILOR, UserRole.ADMIN] },
+        ]
+      : []),
+
+    // Admin-only items
+    ...(hasRole(UserRole.ADMIN)
+      ? [
+          { name: 'User Management', path: '/admin/users', roles: [UserRole.ADMIN] },
+          { name: 'System Monitoring', path: '/admin/monitoring', roles: [UserRole.ADMIN] },
+          { name: 'Settings', path: '/admin/settings', roles: [UserRole.ADMIN] },
+        ]
+      : []),
+  ];
+
+  // Filter navigation items based on user role
+  const filteredItems = navigationItems.filter(item => {
+    return !item.roles || (user && hasRole(item.roles));
+  });
 
   return (
     <nav className="bg-white shadow">
@@ -19,245 +49,160 @@ const Navigation: React.FC = () => {
         <div className="flex justify-between h-16">
           <div className="flex">
             <div className="flex-shrink-0 flex items-center">
-              <Link to="/">
-                <span className="text-blue-600 font-bold text-xl">SewSuite</span>
+              <Link to="/" className="font-bold text-xl text-blue-600">
+                SewSuite
               </Link>
             </div>
-            <div className="hidden sm:ml-6 sm:flex sm:space-x-8">
-              <Link
-                to="/dashboard"
-                className={`${
-                  isActive('/dashboard')
-                    ? 'border-blue-500 text-gray-900'
-                    : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
-                } inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium`}
-              >
-                Dashboard
-              </Link>
-              <Link
-                to="/orders"
-                className={`${
-                  isActive('/orders')
-                    ? 'border-blue-500 text-gray-900'
-                    : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
-                } inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium`}
-              >
-                Orders
-              </Link>
-              <Link
-                to="/files"
-                className={`${
-                  isActive('/files')
-                    ? 'border-blue-500 text-gray-900'
-                    : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
-                } inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium`}
-              >
-                Files
-              </Link>
-              {user?.role === 'admin' && (
-                <Link
-                  to="/admin/users"
-                  className={`${
-                    isActive('/admin/users')
-                      ? 'border-blue-500 text-gray-900'
-                      : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
-                  } inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium`}
-                >
-                  Users
-                </Link>
-              )}
-            </div>
-          </div>
-          <div className="hidden sm:ml-6 sm:flex sm:items-center">
-            <div className="relative">
-              <button
-                type="button"
-                className="bg-white rounded-full flex text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-                id="user-menu-button"
-                aria-expanded="false"
-                aria-haspopup="true"
-                onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
-              >
-                <span className="sr-only">Open user menu</span>
-                <div className="h-8 w-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-800 font-medium">
-                  {user?.firstName?.[0] || user?.email?.[0]?.toUpperCase() || 'U'}
-                </div>
-              </button>
 
-              {isProfileMenuOpen && (
-                <div
-                  className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg py-1 bg-white ring-1 ring-black ring-opacity-5 focus:outline-none"
-                  role="menu"
-                  aria-orientation="vertical"
-                  aria-labelledby="user-menu-button"
-                  tabIndex={-1}
+            {/* Desktop menu */}
+            <div className="hidden sm:ml-6 sm:flex sm:space-x-8">
+              {filteredItems.map(item => (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  className={`inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium ${
+                    location.pathname === item.path || location.pathname.startsWith(`${item.path}/`)
+                      ? 'border-blue-500 text-gray-900'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
                 >
-                  <div className="px-4 py-2 text-sm text-gray-700 border-b">
-                    <div className="font-medium">{user?.fullName || user?.email}</div>
-                    <div className="text-gray-500">{user?.email}</div>
-                  </div>
-                  <Link
-                    to="/profile"
-                    className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                    role="menuitem"
-                    tabIndex={-1}
-                    id="user-menu-item-0"
-                    onClick={() => setIsProfileMenuOpen(false)}
-                  >
-                    Your Profile
-                  </Link>
-                  <button
-                    type="button"
-                    className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                    role="menuitem"
-                    tabIndex={-1}
-                    id="user-menu-item-2"
-                    onClick={() => {
-                      setIsProfileMenuOpen(false);
-                      logout();
-                    }}
-                  >
-                    Sign out
-                  </button>
-                </div>
-              )}
+                  {item.name}
+                </Link>
+              ))}
             </div>
           </div>
-          <div className="-mr-2 flex items-center sm:hidden">
-            {/* Mobile menu button */}
+
+          <div className="hidden sm:ml-6 sm:flex sm:items-center">
+            {isAuthenticated ? (
+              <div className="relative flex items-center space-x-4">
+                <Link to="/account" className="text-gray-500 hover:text-gray-700">
+                  {user?.firstName || user?.email}
+                </Link>
+                <button onClick={logout} className="text-gray-500 hover:text-gray-700">
+                  Logout
+                </button>
+              </div>
+            ) : (
+              <div className="space-x-4">
+                <Link
+                  to="/login"
+                  className="inline-flex items-center px-3 py-2 border border-transparent text-sm leading-4 font-medium rounded-md text-white bg-blue-600 hover:bg-blue-500"
+                >
+                  Login
+                </Link>
+                <Link
+                  to="/register"
+                  className="inline-flex items-center px-3 py-2 border border-gray-300 text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                >
+                  Register
+                </Link>
+              </div>
+            )}
+          </div>
+
+          {/* Mobile menu button */}
+          <div className="flex items-center sm:hidden">
             <button
-              type="button"
-              className="inline-flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500"
-              aria-controls="mobile-menu"
+              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+              className="inline-flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100"
               aria-expanded="false"
-              onClick={() => setIsMenuOpen(!isMenuOpen)}
             >
               <span className="sr-only">Open main menu</span>
-              {isMenuOpen ? (
-                <svg
-                  className="block h-6 w-6"
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  aria-hidden="true"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="2"
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
-              ) : (
-                <svg
-                  className="block h-6 w-6"
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  aria-hidden="true"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="2"
-                    d="M4 6h16M4 12h16M4 18h16"
-                  />
-                </svg>
-              )}
+              {/* Icon for menu */}
+              <svg
+                className={`${isMobileMenuOpen ? 'hidden' : 'block'} h-6 w-6`}
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  d="M4 6h16M4 12h16M4 18h16"
+                />
+              </svg>
+              {/* Icon for close */}
+              <svg
+                className={`${isMobileMenuOpen ? 'block' : 'hidden'} h-6 w-6`}
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
             </button>
           </div>
         </div>
       </div>
 
       {/* Mobile menu */}
-      {isMenuOpen && (
-        <div className="sm:hidden" id="mobile-menu">
-          <div className="pt-2 pb-3 space-y-1">
+      <div className={`${isMobileMenuOpen ? 'block' : 'hidden'} sm:hidden`}>
+        <div className="pt-2 pb-3 space-y-1">
+          {filteredItems.map(item => (
             <Link
-              to="/dashboard"
-              className={`${
-                isActive('/dashboard')
+              key={item.path}
+              to={item.path}
+              className={`block pl-3 pr-4 py-2 border-l-4 text-base font-medium ${
+                location.pathname === item.path || location.pathname.startsWith(`${item.path}/`)
                   ? 'bg-blue-50 border-blue-500 text-blue-700'
-                  : 'border-transparent text-gray-500 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-700'
-              } block pl-3 pr-4 py-2 border-l-4 text-base font-medium`}
-              onClick={() => setIsMenuOpen(false)}
+                  : 'border-transparent text-gray-600 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-800'
+              }`}
+              onClick={() => setIsMobileMenuOpen(false)}
             >
-              Dashboard
+              {item.name}
             </Link>
-            <Link
-              to="/orders"
-              className={`${
-                isActive('/orders')
-                  ? 'bg-blue-50 border-blue-500 text-blue-700'
-                  : 'border-transparent text-gray-500 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-700'
-              } block pl-3 pr-4 py-2 border-l-4 text-base font-medium`}
-              onClick={() => setIsMenuOpen(false)}
-            >
-              Orders
-            </Link>
-            <Link
-              to="/files"
-              className={`${
-                isActive('/files')
-                  ? 'bg-blue-50 border-blue-500 text-blue-700'
-                  : 'border-transparent text-gray-500 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-700'
-              } block pl-3 pr-4 py-2 border-l-4 text-base font-medium`}
-              onClick={() => setIsMenuOpen(false)}
-            >
-              Files
-            </Link>
-            {user?.role === 'admin' && (
+          ))}
+        </div>
+        <div className="pt-4 pb-3 border-t border-gray-200">
+          {isAuthenticated ? (
+            <div className="space-y-1">
               <Link
-                to="/admin/users"
-                className={`${
-                  isActive('/admin/users')
-                    ? 'bg-blue-50 border-blue-500 text-blue-700'
-                    : 'border-transparent text-gray-500 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-700'
-                } block pl-3 pr-4 py-2 border-l-4 text-base font-medium`}
-                onClick={() => setIsMenuOpen(false)}
+                to="/account"
+                className="block pl-3 pr-4 py-2 border-l-4 border-transparent text-base font-medium text-gray-600 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-800"
+                onClick={() => setIsMobileMenuOpen(false)}
               >
-                Users
-              </Link>
-            )}
-          </div>
-          <div className="pt-4 pb-3 border-t border-gray-200">
-            <div className="flex items-center px-4">
-              <div className="flex-shrink-0">
-                <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-800 font-medium">
-                  {user?.firstName?.[0] || user?.email?.[0]?.toUpperCase() || 'U'}
-                </div>
-              </div>
-              <div className="ml-3">
-                <div className="text-base font-medium text-gray-800">
-                  {user?.fullName || user?.email}
-                </div>
-                <div className="text-sm font-medium text-gray-500">{user?.email}</div>
-              </div>
-            </div>
-            <div className="mt-3 space-y-1">
-              <Link
-                to="/profile"
-                className="block px-4 py-2 text-base font-medium text-gray-500 hover:text-gray-800 hover:bg-gray-100"
-                onClick={() => setIsMenuOpen(false)}
-              >
-                Your Profile
+                Account
               </Link>
               <button
-                type="button"
-                className="block w-full text-left px-4 py-2 text-base font-medium text-gray-500 hover:text-gray-800 hover:bg-gray-100"
                 onClick={() => {
-                  setIsMenuOpen(false);
                   logout();
+                  setIsMobileMenuOpen(false);
                 }}
+                className="block w-full text-left pl-3 pr-4 py-2 border-l-4 border-transparent text-base font-medium text-gray-600 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-800"
               >
-                Sign out
+                Logout
               </button>
             </div>
-          </div>
+          ) : (
+            <div className="space-y-1">
+              <Link
+                to="/login"
+                className="block pl-3 pr-4 py-2 border-l-4 border-transparent text-base font-medium text-gray-600 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-800"
+                onClick={() => setIsMobileMenuOpen(false)}
+              >
+                Login
+              </Link>
+              <Link
+                to="/register"
+                className="block pl-3 pr-4 py-2 border-l-4 border-transparent text-base font-medium text-gray-600 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-800"
+                onClick={() => setIsMobileMenuOpen(false)}
+              >
+                Register
+              </Link>
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </nav>
   );
 };

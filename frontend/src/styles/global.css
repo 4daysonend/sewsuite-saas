@@ -1,0 +1,10 @@
+/* Add these base responsive utilities */
+@layer utilities {
+  .responsive-container {
+    @apply w-full px-4 mx-auto sm:px-6 md:max-w-3xl lg:max-w-5xl lg:px-8;
+  }
+  
+  .responsive-card {
+    @apply w-full rounded-lg shadow-md overflow-hidden bg-white sm:rounded-xl;
+  }
+}

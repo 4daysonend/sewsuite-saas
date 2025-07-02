@@ -1,0 +1,28 @@
+FROM node:18
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Install global packages for development
+RUN npm install -g @nestjs/cli typescript ts-node
+
+# Install dependencies for Sharp and PDF processing
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libvips-dev \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the rest of the application
+COPY . .
+
+# Expose port
+EXPOSE 3000
+
+# Start in development mode
+CMD ["npm", "run", "start:dev"]

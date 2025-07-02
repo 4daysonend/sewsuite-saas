@@ -1,36 +1,42 @@
 // sewsuite-saas\frontend\src\components\auth\ProtectedRoute.tsx
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import { UserRole } from '../../types/user';
+import LoadingState from '../common/LoadingState';
 
 interface ProtectedRouteProps {
+  requiredRoles?: UserRole | UserRole[];
   children: React.ReactNode;
-  requiredRole?: string;
 }
 
-const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ 
-  children, 
-  requiredRole 
-}) => {
-  const { isAuthenticated, user, loading } = useAuth();
+const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ requiredRoles, children }) => {
+  const { user, isAuthenticated, isLoading, hasRole } = useAuth();
   const location = useLocation();
 
-  if (loading) {
+  useEffect(() => {
+    // Track page access attempts for analytics/security
+    if (!isAuthenticated && !isLoading) {
+      console.log(`Unauthenticated access attempt to: ${location.pathname}`);
+      // Could log to your analytics or security monitoring system
+    }
+  }, [isAuthenticated, isLoading, location]);
+
+  if (isLoading) {
     return (
-      <div className="flex justify-center items-center h-screen">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <LoadingState message="Verifying your credentials..." />
       </div>
     );
   }
 
   if (!isAuthenticated) {
-    // Redirect to login if not authenticated
+    // Redirect to login with return path
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  // Check required role if specified
-  if (requiredRole && user && user.role !== requiredRole) {
-    // Redirect to unauthorized page
+  // Check for required roles
+  if (requiredRoles && !hasRole(requiredRoles)) {
     return <Navigate to="/unauthorized" replace />;
   }
 

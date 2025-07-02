@@ -1,33 +1,55 @@
 // sewsuite-saas\frontend\src\components\common\Unauthorized.tsx
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { useAuth } from '../../contexts/AuthContext';
+import { FiAlertTriangle } from 'react-icons/fi';
+import { useUser } from '../../hooks/useUser';
 
 const Unauthorized: React.FC = () => {
-  const { user } = useAuth();
-  
+  const { isAuthenticated, user } = useUser();
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-md w-full text-center">
-        <div className="flex justify-center">
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-24 w-24 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m0 0v2m0-2h2m-2 0H9m2-6a2 2 0 00-2 2c0 .39.1.74.26 1.05l1.49 2.97a1 1 0 001.5 0l1.49-2.97A2.1 2.1 0 0014 11a2 2 0 00-2-2z" />
-          </svg>
+    <div className="min-h-screen bg-gray-100 flex items-center justify-center px-4 sm:px-6 lg:px-8">
+      <div className="max-w-md w-full space-y-8 bg-white p-10 rounded-lg shadow-md">
+        <div className="flex flex-col items-center">
+          <FiAlertTriangle className="text-yellow-500" size={64} />
+          <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">Access Denied</h2>
+          <p className="mt-2 text-center text-sm text-gray-600">
+            You don't have permission to access this page.
+          </p>
         </div>
-        <h2 className="text-2xl font-bold text-gray-900 mt-4">Access Denied</h2>
-        <p className="mt-2 text-base text-gray-600">
-          You don't have permission to access this page.
-        </p>
-        <p className="mt-1 text-sm text-gray-500">
-          Current role: {user?.role || 'Unknown'}
-        </p>
-        <div className="mt-6">
-          <Link
-            to="/dashboard"
-            className="inline-flex items-center px-4 py-2 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-          >
-            Go to Dashboard
-          </Link>
+
+        <div className="mt-8 space-y-4">
+          {isAuthenticated ? (
+            <>
+              <p className="text-center text-sm text-gray-500">
+                Logged in as: <span className="font-semibold">{user?.email}</span>
+                <br />
+                Role: <span className="font-semibold">{user?.role}</span>
+              </p>
+              <div className="text-center">
+                <Link
+                  to="/dashboard"
+                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                >
+                  Return to Dashboard
+                </Link>
+              </div>
+            </>
+          ) : (
+            <div className="text-center space-y-4">
+              <p>Please log in to access the application.</p>
+              <Link
+                to="/login"
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+              >
+                Log In
+              </Link>
+            </div>
+          )}
+          
+          <p className="mt-6 text-center text-xs text-gray-500">
+            If you believe this is a mistake, please contact your administrator.
+          </p>
         </div>
       </div>
     </div>
