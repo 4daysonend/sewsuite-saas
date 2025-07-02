@@ -6,10 +6,11 @@ import {
   Index,
   BeforeInsert,
   BeforeUpdate,
-  AfterLoad
+  AfterLoad,
+  PrimaryGeneratedColumn,
 } from 'typeorm';
 import { Exclude, Expose } from 'class-transformer';
-import { BaseEntity } from '../../common/base.entity';
+import { BaseEntity } from '../../common/entities/base.entity';
 import { User } from '../../users/entities/user.entity';
 import { Order } from '../../orders/entities/order.entity';
 
@@ -17,14 +18,11 @@ import { Order } from '../../orders/entities/order.entity';
  * File categories
  */
 export enum FileCategory {
-  MEASUREMENT = 'measurement',
-  DESIGN = 'design',
-  FABRIC = 'fabric',
-  REFERENCE = 'reference',
-  FITTING = 'fitting',
-  PRODUCT = 'product',
+  DOCUMENT = 'document',
+  IMAGE = 'image',
+  PATTERN = 'pattern',
   INVOICE = 'invoice',
-  PROFILE = 'profile',
+  OTHER = 'other',
 }
 
 /**
@@ -36,6 +34,12 @@ export enum FileStatus {
   ACTIVE = 'active',
   ARCHIVED = 'archived',
   FAILED = 'failed',
+  ERROR = 'error',
+  UPLOADED = 'uploaded',
+  PENDING_PROCESSING = 'pending_processing',
+  QUEUED_FOR_PROCESSING = 'queued_for_processing',
+  PROCESSED = 'processed',
+  PROCESSING_FAILED = 'processing_failed',
 }
 
 /**
@@ -107,6 +111,9 @@ interface FileVersion {
 @Index(['category'])
 @Index(['status'])
 export class File extends BaseEntity {
+  @PrimaryGeneratedColumn('uuid')
+  declare id: string;
+
   /**
    * Original filename
    */
@@ -128,8 +135,8 @@ export class File extends BaseEntity {
   /**
    * Storage path
    */
-  @Column()
-  path = '';
+  @Column({ nullable: true })
+  path: string | null;
 
   /**
    * Public URL (if available)
@@ -143,9 +150,9 @@ export class File extends BaseEntity {
   @Column({
     type: 'enum',
     enum: FileCategory,
-    default: FileCategory.REFERENCE,
+    default: FileCategory.OTHER,
   })
-  category: FileCategory = FileCategory.REFERENCE;
+  category: FileCategory = FileCategory.OTHER;
 
   /**
    * Processing status
@@ -204,7 +211,7 @@ export class File extends BaseEntity {
   /**
    * Processing history
    */
-  @Column('jsonb', { nullable: true })
+  @Column('jsonb', { nullable: true, default: [] })
   processingHistory: Array<{
     timestamp: Date;
     action: string;
@@ -217,9 +224,11 @@ export class File extends BaseEntity {
   private tempIsPdf?: boolean;
   private tempFileExtension?: string;
 
-  constructor(partial: Partial<File>) {
+  constructor(partial?: Partial<File>) {
     super();
-    Object.assign(this, partial);
+    if (partial) {
+      Object.assign(this, partial);
+    }
   }
 
   @BeforeInsert()
@@ -252,8 +261,10 @@ export class File extends BaseEntity {
       'text/plain': 'txt',
       'text/csv': 'csv',
       'application/json': 'json',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+        'docx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+        'xlsx',
     };
 
     return extensionMap[this.mimeType] || '';
@@ -317,6 +328,7 @@ export class File extends BaseEntity {
    * @returns Serialized object
    */
   toJSON() {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { encryptionKeyId, ...safeFile } = this;
     return safeFile;
   }

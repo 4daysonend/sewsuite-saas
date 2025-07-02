@@ -5,6 +5,8 @@ import {
   BadRequestException,
   ForbiddenException,
   InternalServerErrorException,
+  forwardRef,
+  Inject,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -19,17 +21,18 @@ import { FileStorageService } from './file-storage.service';
 import { UploadFileDto } from '../dto/upload-file.dto';
 import { ChunkUploadDto } from '../dto/chunk-upload.dto';
 import { User } from '../../users/entities/user.entity';
-import { PaginationOptions } from '../../common/interfaces/pagination.interface';
-
-interface FileUploadResult {
-  id: string;
-  originalName: string;
-  size: number;
-  mimeType: string;
-  status: FileStatus;
-  category: FileCategory;
-  publicUrl?: string;
-}
+import {
+  FileUploadResult,
+  ChunkUploadResult,
+  FileStatusResult,
+  StorageQuotaResult,
+  MultipleFilesUploadResult,
+} from '../interfaces/upload.interface';
+import { OrdersService } from '../../orders/services/orders.service';
+import { GetFilesFilterDto } from '../dto/get-files-filter.dto';
+import { Express } from 'express'; // Import Express namespace
+import { Readable } from 'stream';
+import { ProcessableFile } from '../types/upload.types';
 
 @Injectable()
 export class UploadService {
@@ -48,8 +51,13 @@ export class UploadService {
     private readonly configService: ConfigService,
     @InjectQueue('file-processing')
     private readonly processingQueue: Queue,
+    @Inject(forwardRef(() => OrdersService)) // Add this line if circular dependency exists
+    private readonly ordersService: OrdersService, // Inject the service
   ) {
-    this.maxSimultaneousUploads = this.configService.get<number>('MAX_SIMULTANEOUS_UPLOADS', 5);
+    this.maxSimultaneousUploads = this.getConfigValue<number>(
+      'MAX_SIMULTANEOUS_UPLOADS',
+      5,
+    );
   }
 
   /**
@@ -71,7 +79,7 @@ export class UploadService {
     const activeUploads = await this.getActiveUploadsCount(user.id);
     if (activeUploads >= this.maxSimultaneousUploads) {
       throw new BadRequestException(
-        `Maximum of ${this.maxSimultaneousUploads} simultaneous uploads allowed`
+        `Maximum of ${this.maxSimultaneousUploads} simultaneous uploads allowed`,
       );
     }
 
@@ -98,8 +106,14 @@ export class UploadService {
     await this.fileRepository.save(fileEntity);
 
     try {
+      // Add the missing property with type assertion
+      const fileWithStream = {
+        ...file,
+        stream: file.buffer, // or null if stream isn't actually used
+      } as any;
+
       // Process and store the file
-      await this.processingService.processFile(file, fileEntity);
+      await this.processingService.processFile(fileWithStream, fileEntity);
 
       // Update quota
       await this.updateQuota(user.id, file.size);
@@ -119,27 +133,60 @@ export class UploadService {
         category: savedFile.category,
         publicUrl: savedFile.publicUrl,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(
         `File upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
-      
+
       fileEntity.status = FileStatus.FAILED;
       fileEntity.metadata = {
         ...fileEntity.metadata,
         error: error instanceof Error ? error.message : 'Unknown error',
         errorTimestamp: new Date().toISOString(),
       };
-      
+
       await this.fileRepository.save(fileEntity);
-      
+
       if (error instanceof BadRequestException) {
         throw error;
       }
-      
+
       throw new InternalServerErrorException('File processing failed');
     }
+  }
+
+  async uploadMultipleFiles(
+    files: Express.Multer.File[],
+    uploadFilesDto: UploadFileDto,
+    user: User,
+  ): Promise<MultipleFilesUploadResult> {
+    const results: FileUploadResult[] = [];
+    const failed: string[] = [];
+
+    // Check total size against quota
+    const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+    await this.checkQuota(user, totalSize);
+
+    // Process each file
+    for (const file of files) {
+      try {
+        const result = await this.uploadFile(file, uploadFilesDto, user);
+        results.push(result);
+      } catch (error: unknown) {
+        this.logger.error(
+          `Failed to upload file ${file.originalname}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        );
+        failed.push(file.originalname);
+      }
+    }
+
+    return {
+      successful: results,
+      failed,
+      totalProcessed: results.length,
+      totalFailed: failed.length,
+    };
   }
 
   /**
@@ -153,7 +200,7 @@ export class UploadService {
     chunk: Express.Multer.File,
     chunkUploadDto: ChunkUploadDto,
     user: User,
-  ): Promise<{ received: boolean; chunksReceived: number; totalChunks: number }> {
+  ): Promise<ChunkUploadResult> {
     const { fileId, chunkNumber, totalChunks } = chunkUploadDto;
 
     // Get or validate file entity
@@ -167,16 +214,18 @@ export class UploadService {
     }
 
     if (fileEntity.uploader.id !== user.id) {
-      throw new ForbiddenException('Unauthorized to upload chunks for this file');
+      throw new ForbiddenException(
+        'Unauthorized to upload chunks for this file',
+      );
     }
 
     try {
       // Store chunk path with padding for proper ordering
       const paddedChunkNumber = String(chunkNumber).padStart(
         String(totalChunks).length,
-        '0'
+        '0',
       );
-      
+
       const path = `chunks/${fileId}/${paddedChunkNumber}`;
 
       // Create chunk entity
@@ -199,28 +248,28 @@ export class UploadService {
       // Update file metadata with progress
       fileEntity.metadata = {
         ...fileEntity.metadata,
-        chunksReceived: fileEntity.metadata.chunksReceived 
-          ? fileEntity.metadata.chunksReceived + 1 
+        chunksReceived: fileEntity.metadata.chunksReceived
+          ? fileEntity.metadata.chunksReceived + 1
           : 1,
         lastChunkReceived: new Date().toISOString(),
       };
-      
+
       await this.fileRepository.save(fileEntity);
 
       // Check if all chunks are received
       const receivedChunks = await this.getReceivedChunksCount(fileId);
 
-      return { 
-        received: true, 
+      return {
+        received: true,
         chunksReceived: receivedChunks,
         totalChunks,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(
         `Chunk upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
-      
+
       throw new InternalServerErrorException('Failed to process file chunk');
     }
   }
@@ -231,7 +280,10 @@ export class UploadService {
    * @param user User completing the upload
    * @returns Processed file information
    */
-  async completeChunkedUpload(fileId: string, user: User): Promise<FileUploadResult> {
+  async completeChunkedUpload(
+    fileId: string,
+    user: User,
+  ): Promise<FileUploadResult> {
     const fileEntity = await this.fileRepository.findOne({
       where: { id: fileId },
       relations: ['uploader'],
@@ -254,7 +306,7 @@ export class UploadService {
     const expectedChunksCount = fileEntity.metadata.totalChunks;
     if (chunks.length !== expectedChunksCount) {
       throw new BadRequestException(
-        `Cannot complete upload: received ${chunks.length} chunks but expected ${expectedChunksCount}`
+        `Cannot complete upload: received ${chunks.length} chunks but expected ${expectedChunksCount}`,
       );
     }
 
@@ -263,17 +315,19 @@ export class UploadService {
       fileEntity.status = FileStatus.PROCESSING;
       await this.fileRepository.save(fileEntity);
 
-      const completeFile = await this.processingService.combineChunks(chunks, fileEntity);
+      const completeFile = await this.processingService.combineChunks(
+        chunks,
+        fileEntity,
+      );
 
       // Process combined file
       await this.processingService.processFile(
-        { 
-          buffer: completeFile,
-          size: completeFile.length,
-          originalname: fileEntity.originalName,
-          mimetype: fileEntity.mimeType,
-        } as Express.Multer.File,
-        fileEntity
+        this.createMulterFileFromBuffer(
+          completeFile,
+          fileEntity.originalName,
+          fileEntity.mimeType,
+        ),
+        fileEntity,
       );
 
       // Clean up chunks
@@ -297,26 +351,28 @@ export class UploadService {
         category: savedFile.category,
         publicUrl: savedFile.publicUrl,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(
         `Failed to complete chunked upload: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
-      
+
       fileEntity.status = FileStatus.FAILED;
       fileEntity.metadata = {
         ...fileEntity.metadata,
         error: error instanceof Error ? error.message : 'Unknown error',
         errorTimestamp: new Date().toISOString(),
       };
-      
+
       await this.fileRepository.save(fileEntity);
-      
+
       if (error instanceof BadRequestException) {
         throw error;
       }
-      
-      throw new InternalServerErrorException('Failed to process chunked upload');
+
+      throw new InternalServerErrorException(
+        'Failed to process chunked upload',
+      );
     }
   }
 
@@ -326,7 +382,10 @@ export class UploadService {
    * @param user Requesting user
    * @returns Signed download URL
    */
-  async getDownloadUrl(fileId: string, user: User): Promise<{ url: string; expiresAt: Date }> {
+  async getDownloadUrl(
+    fileId: string,
+    user: User,
+  ): Promise<{ url: string; expiresAt: Date }> {
     const file = await this.fileRepository.findOne({
       where: { id: fileId },
       relations: ['uploader', 'order', 'order.client', 'order.tailor'],
@@ -340,8 +399,9 @@ export class UploadService {
     this.checkFileAccess(file, user);
 
     try {
-      const { url, expiresAt } = await this.storageService.generateSignedUrl(file);
-      
+      const { url, expiresAt } =
+        await this.storageService.generateSignedUrl(file);
+
       // Log download request
       file.metadata = {
         ...file.metadata,
@@ -349,16 +409,16 @@ export class UploadService {
         lastDownloadedAt: new Date().toISOString(),
         lastDownloadedBy: user.id,
       };
-      
+
       await this.fileRepository.save(file);
-      
+
       return { url, expiresAt };
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(
         `Failed to generate download URL: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
-      
+
       throw new InternalServerErrorException('Failed to generate download URL');
     }
   }
@@ -366,29 +426,34 @@ export class UploadService {
   /**
    * Get files for a user with optional filtering
    * @param user User to get files for
-   * @param category Optional category filter
-   * @param pagination Pagination options
+   * @param filters Optional filters
    * @returns Files and total count
    */
   async getUserFiles(
     user: User,
-    category?: FileCategory,
-    pagination: PaginationOptions = { page: 1, limit: 10 },
+    filters: GetFilesFilterDto,
   ): Promise<{ files: File[]; total: number }> {
-    const skip = (pagination.page - 1) * pagination.limit;
-    
-    const query = this.fileRepository.createQueryBuilder('file')
-      .where('file.uploader = :userId', { userId: user.id })
-      .andWhere('file.status != :status', { status: FileStatus.PENDING });
+    const { category, orderId } = filters;
+    const page = filters.page || 1;
+    const limit = filters.limit || 10;
+    const skip = (page - 1) * limit;
+
+    const query = this.fileRepository
+      .createQueryBuilder('file')
+      .where('file.userId = :userId', { userId: user.id });
 
     if (category) {
       query.andWhere('file.category = :category', { category });
     }
 
+    if (orderId) {
+      query.andWhere('file.orderId = :orderId', { orderId });
+    }
+
     const [files, total] = await query
       .orderBy('file.createdAt', 'DESC')
       .skip(skip)
-      .take(pagination.limit)
+      .take(limit)
       .getManyAndCount();
 
     return { files, total };
@@ -416,18 +481,18 @@ export class UploadService {
     try {
       // Delete from storage
       await this.storageService.deleteFile(file);
-      
+
       // Update user quota
       await this.updateQuota(user.id, -file.size);
-      
+
       // Soft delete in database
       await this.fileRepository.softDelete(fileId);
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(
         `Failed to delete file: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
-      
+
       throw new InternalServerErrorException('Failed to delete file');
     }
   }
@@ -449,8 +514,11 @@ export class UploadService {
 
     if (!quota) {
       // Create default quota for user
-      const defaultQuota = this.configService.get<number>('DEFAULT_STORAGE_QUOTA', 1073741824); // 1GB
-      
+      const defaultQuota = this.getConfigValue<number>(
+        'DEFAULT_STORAGE_QUOTA',
+        1073741824, // 1GB default
+      );
+
       quota = await this.quotaRepository.save({
         user: { id: user.id } as User,
         totalSpace: defaultQuota,
@@ -461,7 +529,8 @@ export class UploadService {
     return {
       used: quota.usedSpace,
       total: quota.totalSpace,
-      percentage: quota.totalSpace > 0 ? (quota.usedSpace / quota.totalSpace) * 100 : 0,
+      percentage:
+        quota.totalSpace > 0 ? (quota.usedSpace / quota.totalSpace) * 100 : 0,
       quotaByCategory: quota.quotaByCategory,
     };
   }
@@ -473,10 +542,10 @@ export class UploadService {
    */
   private async checkQuota(user: User, fileSize: number): Promise<void> {
     const quota = await this.getStorageQuota(user);
-    
+
     if (quota.used + fileSize > quota.total) {
       throw new BadRequestException(
-        `Storage quota exceeded. Available: ${formatBytes(quota.total - quota.used)}, Required: ${formatBytes(fileSize)}`
+        `Storage quota exceeded. Available: ${this.formatBytes(quota.total - quota.used)}, Required: ${this.formatBytes(fileSize)}`,
       );
     }
   }
@@ -491,18 +560,18 @@ export class UploadService {
       const quota = await this.quotaRepository.findOne({
         where: { user: { id: userId } },
       });
-      
+
       if (!quota) {
         this.logger.warn(`Quota not found for user: ${userId}`);
         return;
       }
-      
+
       // Update used space
       quota.usedSpace = Math.max(0, quota.usedSpace + size);
       quota.lastQuotaUpdate = new Date();
-      
+
       await this.quotaRepository.save(quota);
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(
         `Failed to update quota: ${error instanceof Error ? error.message : 'Unknown error'}`,
       );
@@ -558,18 +627,23 @@ export class UploadService {
    * @param fileId File ID
    * @param chunks Chunks to clean up
    */
-  private async cleanupChunks(fileId: string, chunks: FileChunk[]): Promise<void> {
+  private async cleanupChunks(
+    fileId: string,
+    chunks: FileChunk[],
+  ): Promise<void> {
     try {
       // Delete chunks from storage
       await Promise.all(
-        chunks.map(chunk => this.storageService.deleteFile({
-          path: chunk.path,
-        }))
+        chunks.map((chunk) =>
+          this.storageService.deleteFile({
+            path: chunk.path,
+          }),
+        ),
       );
-      
+
       // Delete chunks from database
       await this.fileChunkRepository.delete({ fileId });
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(
         `Failed to cleanup chunks: ${error instanceof Error ? error.message : 'Unknown error'}`,
       );
@@ -583,7 +657,7 @@ export class UploadService {
    * @param user User requesting access
    */
   private checkFileAccess(file: File, user: User): void {
-    const hasAccess = 
+    const hasAccess =
       // Owner of the file
       file.uploader.id === user.id ||
       // Client of the order
@@ -592,22 +666,194 @@ export class UploadService {
       (file.order?.tailor && file.order.tailor.id === user.id);
 
     if (!hasAccess) {
-      throw new ForbiddenException('You do not have permission to access this file');
+      throw new ForbiddenException(
+        'You do not have permission to access this file',
+      );
     }
   }
-}
 
-/**
- * Format bytes to human readable format
- * @param bytes Bytes to format
- * @returns Formatted string
- */
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 Bytes';
-  
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  private validateOrderService(): void {
+    if (!this.ordersService) {
+      throw new InternalServerErrorException('Order service not available');
+    }
+  }
+
+  async getOrderFiles(
+    orderId: string,
+    user: User,
+  ): Promise<{ files: File[]; total: number }> {
+    this.validateOrderService();
+    // Validate that the user has access to the order
+    // Note: You need to inject and use OrderService for this to work
+    const orderService = this.ordersService;
+    if (!orderService) {
+      throw new InternalServerErrorException('Order service not available');
+    }
+
+    const order = await orderService.findOne(orderId, user.id, user.role);
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    // Get files associated with this order
+    const [files, total] = await this.fileRepository.findAndCount({
+      where: { order: { id: orderId } },
+      order: { createdAt: 'DESC' },
+    });
+
+    return { files, total };
+  }
+
+  async getFileStatus(fileId: string, user: User): Promise<FileStatusResult> {
+    // Find the file
+    const file = await this.fileRepository.findOne({
+      where: { id: fileId },
+      relations: ['uploader'],
+    });
+
+    if (!file) {
+      throw new NotFoundException('File not found');
+    }
+
+    // Check permissions
+    if (file.uploader.id !== user.id) {
+      throw new ForbiddenException('You do not have access to this file');
+    }
+
+    // Calculate progress based on chunks received if file is being uploaded in chunks
+    let progress = 100; // Default to 100% for normal uploads
+
+    if (file.metadata?.chunkedUpload) {
+      const totalChunks = file.metadata.totalChunks || 1;
+      const receivedChunks = file.metadata.chunksReceived || 0;
+      progress = Math.floor((receivedChunks / totalChunks) * 100);
+    }
+
+    return {
+      status: file.status,
+      progress,
+      message: file.metadata?.error || undefined,
+    };
+  }
+
+  async getUserStorageQuota(userId: string): Promise<StorageQuotaResult> {
+    try {
+      // Find the user's quota record
+      let quota = await this.quotaRepository.findOne({
+        where: { user: { id: userId } },
+      });
+
+      if (!quota) {
+        // Create default quota for user if not found
+        const defaultQuota = this.getConfigValue<number>(
+          'DEFAULT_STORAGE_QUOTA',
+          1073741824, // 1GB default
+        );
+
+        quota = await this.quotaRepository.save({
+          user: { id: userId } as User,
+          totalSpace: defaultQuota,
+          usedSpace: 0,
+          lastQuotaUpdate: new Date(),
+        });
+      }
+
+      // Calculate available space
+      const used = quota.usedSpace;
+      const total = quota.totalSpace;
+      const available = Math.max(0, total - used);
+      const usagePercentage = total > 0 ? Math.round((used / total) * 100) : 0;
+
+      // Format sizes for human-readable display
+      const usedFormatted = this.formatBytes(used);
+      const totalFormatted = this.formatBytes(total);
+      const availableFormatted = this.formatBytes(available);
+
+      return {
+        used,
+        total,
+        available,
+        usedFormatted,
+        totalFormatted,
+        availableFormatted,
+        usagePercentage,
+      };
+    } catch (error: unknown) {
+      this.logger.error(
+        `Failed to get user storage quota: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw new InternalServerErrorException(
+        'Failed to retrieve storage quota information',
+      );
+    }
+  }
+
+  /**
+   * Format bytes to human readable format
+   * @param bytes Bytes to format
+   * @returns Formatted string
+   */
+  private formatBytes(bytes: number): string {
+    if (bytes === 0) return '0 Bytes';
+
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+
+  // Then use the service somewhere in your class methods
+  async linkFileToOrder(fileId: string, orderId: string): Promise<void> {
+    const file = await this.fileRepository.findOne({ where: { id: fileId } });
+    if (!file) {
+      throw new NotFoundException(`File with ID ${fileId} not found`);
+    }
+
+    // Update file entity to associate it with the order
+    file.order = { id: orderId } as any;
+    await this.fileRepository.save(file);
+
+    // Optionally notify OrdersService about the file attachment
+    // You could implement a method in OrdersService if needed in the future
+  }
+
+  private getConfigValue<T>(key: string, defaultValue: T): T {
+    return this.configService.get<T>(key, defaultValue);
+  }
+
+  // Use the built-in Multer File type
+  processFile(file: Express.Multer.File) {
+    // Process the file
+    return {
+      originalName: file.originalname,
+      size: file.size,
+      mimeType: file.mimetype,
+    };
+  }
+
+  private createMulterFileFromBuffer(
+    buffer: Buffer,
+    name: string,
+    mimetype: string,
+  ): ProcessableFile {
+    // Create a proper Readable stream from the buffer
+    const stream = new Readable();
+    stream.push(buffer);
+    stream.push(null); // Signal the end of the stream
+
+    return {
+      buffer,
+      size: buffer.length,
+      originalname: name,
+      mimetype,
+      fieldname: 'file',
+      encoding: '7bit',
+      destination: '',
+      filename: name,
+      path: '',
+      stream, // Now it's a proper Readable stream
+    };
+  }
 }

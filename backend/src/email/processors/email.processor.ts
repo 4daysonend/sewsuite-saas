@@ -38,7 +38,7 @@ export class EmailProcessor {
 
       this.logger.log(`Email sent successfully to ${to}`);
     } catch (error) {
-      this.logger.error(`Failed to send email: ${error.message}`);
+      this.logger.error(`Failed to send email: ${(error as any).message}`);
       throw error;
     }
   }

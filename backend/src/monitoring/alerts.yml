@@ -1,0 +1,154 @@
+groups:
+  - name: email_service_alerts
+    rules:
+    # Email Queue Failure Alerts
+    - alert: EmailQueueGrowing
+      expr: sum(bull_queue_waiting_count{queue="email"}) > 50
+      for: 10m
+      labels:
+        severity: warning
+        service: email
+      annotations:
+        summary: "Email queue is growing ({{ $value }} waiting jobs)"
+        description: "The email queue has more than 50 waiting jobs for over 10 minutes, indicating potential processing issues."
+        runbook_url: "https://wiki.sewsuite.co/runbooks/email-service#growing-queue"
+
+    - alert: EmailQueueCritical
+      expr: sum(bull_queue_waiting_count{queue="email"}) > 100
+      for: 15m
+      labels:
+        severity: critical
+        service: email
+      annotations:
+        summary: "Email queue critical ({{ $value }} waiting jobs)"
+        description: "The email queue has exceeded 100 waiting jobs for over 15 minutes. Immediate attention required."
+        runbook_url: "https://wiki.sewsuite.co/runbooks/email-service#critical-queue"
+
+    - alert: EmailDeadLetterQueueGrowing
+      expr: sum(bull_queue_waiting_count{queue="email-dlq"}) > 5
+      for: 5m
+      labels:
+        severity: warning
+        service: email
+      annotations:
+        summary: "Email dead letter queue has {{ $value }} failed jobs"
+        description: "Jobs are being moved to the dead letter queue after multiple failed attempts. Check logs for error patterns."
+        runbook_url: "https://wiki.sewsuite.co/runbooks/email-service#dead-letter-queue"
+
+    - alert: EmailDeadLetterQueueCritical
+      expr: sum(bull_queue_waiting_count{queue="email-dlq"}) > 20
+      for: 10m
+      labels:
+        severity: critical
+        service: email
+      annotations:
+        summary: "Email dead letter queue critical ({{ $value }} failed jobs)"
+        description: "High number of failed jobs in the email dead letter queue. Requires immediate investigation."
+        runbook_url: "https://wiki.sewsuite.co/runbooks/email-service#critical-dlq"
+
+    # Email Job Latency Alerts
+    - alert: EmailJobLatencyHigh
+      expr: histogram_quantile(0.95, sum(rate(bull_job_duration_seconds_bucket{queue="email"}[5m])) by (le)) > 5
+      for: 5m
+      labels:
+        severity: warning
+        service: email
+      annotations:
+        summary: "Email job processing latency high (95th percentile: {{ $value }}s)"
+        description: "95% of email jobs are taking more than 5 seconds to process. This could indicate SMTP issues or service degradation."
+        runbook_url: "https://wiki.sewsuite.co/runbooks/email-service#high-latency"
+
+    - alert: EmailJobLatencyCritical
+      expr: histogram_quantile(0.95, sum(rate(bull_job_duration_seconds_bucket{queue="email"}[5m])) by (le)) > 15
+      for: 10m
+      labels:
+        severity: critical
+        service: email
+      annotations:
+        summary: "Email job processing latency critical (95th percentile: {{ $value }}s)"
+        description: "95% of email jobs are taking more than 15 seconds to process. This indicates severe performance issues."
+        runbook_url: "https://wiki.sewsuite.co/runbooks/email-service#critical-latency"
+
+    # Email Job Failure Rate Alerts
+    - alert: EmailJobFailureRateHigh
+      expr: sum(increase(bull_job_failed_count{queue="email"}[10m])) / sum(increase(bull_job_completed_count{queue="email"}[10m]) + increase(bull_job_failed_count{queue="email"}[10m])) > 0.05
+      for: 5m
+      labels:
+        severity: warning
+        service: email
+      annotations:
+        summary: "Email job failure rate high ({{ $value | humanizePercentage }})"
+        description: "More than 5% of email jobs are failing. Check SMTP connectivity and email service logs."
+        runbook_url: "https://wiki.sewsuite.co/runbooks/email-service#failure-rate"
+
+    - alert: EmailJobFailureRateCritical
+      expr: sum(increase(bull_job_failed_count{queue="email"}[10m])) / sum(increase(bull_job_completed_count{queue="email"}[10m]) + increase(bull_job_failed_count{queue="email"}[10m])) > 0.2
+      for: 5m
+      labels:
+        severity: critical
+        service: email
+      annotations:
+        summary: "Email job failure rate critical ({{ $value | humanizePercentage }})"
+        description: "More than 20% of email jobs are failing. This indicates severe problems with email delivery."
+        runbook_url: "https://wiki.sewsuite.co/runbooks/email-service#critical-failure-rate"
+
+    # SMTP Connectivity Alerts
+    - alert: SMTPConnectionFailure
+      expr: smtp_up == 0
+      for: 2m
+      labels:
+        severity: critical
+        service: email
+      annotations:
+        summary: "SMTP server connection failed"
+        description: "The application cannot connect to the SMTP server. Email delivery is impacted."
+        runbook_url: "https://wiki.sewsuite.co/runbooks/email-service#smtp-connection"
+
+    - alert: EmailSendingDelayed
+      expr: time() - max(smtp_last_successful_connection_timestamp) > 300
+      for: 5m
+      labels:
+        severity: warning
+        service: email
+      annotations:
+        summary: "No successful SMTP connections in the last 5 minutes"
+        description: "The application hasn't successfully connected to the SMTP server in the last 5 minutes."
+        runbook_url: "https://wiki.sewsuite.co/runbooks/email-service#smtp-delayed"
+        
+    - alert: PaymentConfirmationEmailsNotSent
+      expr: increase(payment_confirmation_emails_failed_total[15m]) > 0
+      for: 5m
+      labels:
+        severity: critical
+        service: email
+        business_impact: high
+      annotations:
+        summary: "Payment confirmation emails failing ({{ $value }} in last 15m)"
+        description: "Payment confirmation emails are failing to send. This directly impacts customer experience."
+        runbook_url: "https://wiki.sewsuite.co/runbooks/email-service#payment-confirmations"
+
+  # Payment Processing Queue Alerts
+  - name: payment_processing_alerts
+    rules:
+    - alert: PaymentProcessingQueueGrowing
+      expr: sum(bull_queue_waiting_count{queue="payment"}) > 20
+      for: 5m
+      labels:
+        severity: warning
+        service: payments
+      annotations:
+        summary: "Payment processing queue growing ({{ $value }} waiting jobs)"
+        description: "The payment processing queue is growing, which may indicate issues with payment gateway connectivity."
+        runbook_url: "https://wiki.sewsuite.co/runbooks/payments#growing-queue"
+
+    - alert: PaymentProcessingFailureRateHigh
+      expr: sum(increase(bull_job_failed_count{queue="payment"}[10m])) / sum(increase(bull_job_completed_count{queue="payment"}[10m]) + increase(bull_job_failed_count{queue="payment"}[10m])) > 0.05
+      for: 5m
+      labels:
+        severity: critical
+        service: payments
+        business_impact: high
+      annotations:
+        summary: "Payment processing failure rate high ({{ $value | humanizePercentage }})"
+        description: "Payment processing is failing at an abnormal rate. Check payment gateway connectivity and logs."
+        runbook_url: "https://wiki.sewsuite.co/runbooks/payments#failure-rate"

@@ -1,24 +1,20 @@
+/* eslint-disable @typescript-eslint/no-namespace */
 import { Request } from 'express';
-
-declare global {
-  namespace Express {
-    namespace Multer {
-      interface File {
-        fieldname: string;
-        originalname: string;
-        encoding: string;
-        mimetype: string;
-        size: number;
-        destination?: string;
-        filename?: string;
-        path?: string;
-        buffer: Buffer;
-      }
-    }
-  }
-}
 
 export interface MulterRequest extends Request {
   file?: Express.Multer.File;
   files?: Express.Multer.File[];
+}
+export interface FileUploadResult {
+  // The uploaded file entity
+  entity?: File;
+
+  // Alternative property name for the file entity
+  file?: File;
+
+  // Download URL for the uploaded file
+  url?: string;
+
+  // Status of the upload
+  success: boolean;
 }

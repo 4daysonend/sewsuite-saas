@@ -1,4 +1,7 @@
-const paymentConfirmationTemplate = `
+import { compile } from 'handlebars';
+import { baseTemplate } from './base.templates';
+
+const paymentConfirmationTemplateEn = `
   ${baseTemplate}
   {{#with data}}
   <h2>Payment Confirmation</h2>
@@ -12,7 +15,7 @@ const paymentConfirmationTemplate = `
   {{/with}}
 `;
 
-const paymentFailedTemplate = `
+const paymentFailedTemplateEn = `
   ${baseTemplate}
   {{#with data}}
   <h2>Payment Failed</h2>
@@ -26,6 +29,13 @@ const paymentFailedTemplate = `
 `;
 
 export const paymentTemplates = {
-  paymentConfirmation: compile(paymentConfirmationTemplate),
-  paymentFailed: compile(paymentFailedTemplate)
+  paymentConfirmation: {
+    en: compile(paymentConfirmationTemplateEn),
+    // Add other locales as needed
+  },
+  paymentFailed: {
+    en: compile(paymentFailedTemplateEn),
+    // Add other locales as needed
+  },
+  // Add other templates as needed
 };

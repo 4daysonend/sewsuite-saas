@@ -3,7 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import * as Handlebars from 'handlebars';
 import { orderTemplates } from '../templates/order-templates';
 import { paymentTemplates } from '../templates/payment-templates';
-import { templateHelpers } from '../helpers/template-helpers';
+
+import * as templateHelpers from '../helpers/template-helpers';
 
 @Injectable()
 export class TemplateService {
@@ -12,7 +13,7 @@ export class TemplateService {
   constructor(private readonly configService: ConfigService) {
     // Register helpers
     Object.entries(templateHelpers).forEach(([name, helper]) => {
-      Handlebars.registerHelper(name, helper);
+      Handlebars.registerHelper(name, helper as Handlebars.HelperDelegate);
     });
   }
 
@@ -37,7 +38,7 @@ export class TemplateService {
       const text = this.convertToPlainText(html);
 
       return { html, text };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to render template: ${error.message}`);
       throw error;
     }
@@ -46,13 +47,45 @@ export class TemplateService {
   private getTemplate(
     name: string,
     locale: string,
-  ): HandlebarsTemplateDelegate {
-    const templates = {
-      ...orderTemplates,
-      ...paymentTemplates,
+  ): HandlebarsTemplateDelegate<any> {
+    const templates: {
+      [key: string]: { [locale: string]: HandlebarsTemplateDelegate<any> };
+    } = {
+      ...Object.keys(orderTemplates)
+        .filter((key) => key !== 'compile')
+        .reduce(
+          (acc, key) => {
+            acc[key] = orderTemplates[key as keyof typeof orderTemplates];
+            return acc;
+          },
+          {} as {
+            [key: string]: {
+              [locale: string]: HandlebarsTemplateDelegate<any>;
+            };
+          },
+        ),
+      ...Object.keys(paymentTemplates)
+        .filter((key) => key !== 'compile')
+        .reduce(
+          (acc, key) => {
+            acc[key] = paymentTemplates[key as keyof typeof paymentTemplates];
+            return acc;
+          },
+          {} as {
+            [key: string]: {
+              [locale: string]: HandlebarsTemplateDelegate<any>;
+            };
+          },
+        ),
     };
 
-    return templates[name];
+    const template = templates[name]?.[locale] || templates[name]?.['en']; // Fallback to 'en' if locale-specific template is not found
+
+    if (!template) {
+      throw new Error(`Template ${name} not found for locale ${locale}`);
+    }
+
+    return template;
   }
 
   private convertToPlainText(html: string): string {

@@ -1,5 +1,5 @@
 import { Entity, Column, Index } from 'typeorm';
-import { BaseEntity } from '../../common/base.entity';
+import { BaseEntity } from '../../common/entities/base.entity';
 
 /**
  * Entity for managing file chunks during multipart uploads

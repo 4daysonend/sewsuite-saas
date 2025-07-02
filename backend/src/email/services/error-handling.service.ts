@@ -3,13 +3,18 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { createHash } from 'crypto';
+import { ErrorEntity } from '../entities/error.entity'; // Update the import path
 
 @Injectable()
 export class ErrorHandlingService {
   private readonly logger = new Logger(ErrorHandlingService.name);
   private readonly environment: string;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    @InjectRepository(ErrorEntity)
+    private readonly errorRepository: Repository<ErrorEntity>,
+  ) {
     this.environment = this.configService.get('NODE_ENV', 'development');
   }
 
@@ -55,10 +60,25 @@ export class ErrorHandlingService {
   ): Promise<void> {
     try {
       // Store in database or error tracking service
-      // This could be integrated with services like Sentry
-      this.logger.debug(`Stored error: ${errorId}`);
+      const errorDetails = {
+        errorId,
+        message: error.message,
+        stack: error.stack,
+        name: error.name,
+        context, // Include context in the error details
+      };
+
+      // Example: Log the error details
+      this.logger.debug(`Stored error: ${JSON.stringify(errorDetails)}`);
+
+      // Store the error details in the database
+      await this.errorRepository.save(errorDetails);
     } catch (storageError) {
-      this.logger.error(`Failed to store error: ${storageError.message}`);
+      if (storageError instanceof Error) {
+        this.logger.error(`Failed to store error: ${storageError.message}`);
+      } else {
+        this.logger.error('Failed to store error: Unknown error');
+      }
     }
   }
 
@@ -68,55 +88,21 @@ export class ErrorHandlingService {
   ): Promise<void> {
     try {
       // Implement alert logic based on error patterns
-      // This could integrate with monitoring services
+      // Example: Check if the error message matches certain patterns
+      if (error.message.includes('specific pattern')) {
+        // Trigger an alert
+        this.logger.warn(`Alert triggered for ${component}: ${error.message}`);
+        // Integrate with monitoring services
+        // await this.monitoringService.triggerAlert(component, error);
+      }
+
       this.logger.debug(`Checked alert thresholds for ${component}`);
     } catch (alertError) {
-      this.logger.error(`Failed to check alerts: ${alertError.message}`);
+      if (alertError instanceof Error) {
+        this.logger.error(`Failed to check alerts: ${alertError.message}`);
+      } else {
+        this.logger.error('Failed to check alerts: Unknown error');
+      }
     }
-  }
-
-  getErrorResponse(
-    error: Error,
-    errorId: string,
-  ): {
-    message: string;
-    errorId: string;
-    userMessage?: string;
-  } {
-    // In production, don't expose internal error details
-    if (this.environment === 'production') {
-      return {
-        message: 'An unexpected error occurred',
-        errorId,
-        userMessage: this.getUserFriendlyMessage(error),
-      };
-    }
-
-    return {
-      message: error.message,
-      errorId,
-      stack: error.stack,
-    };
-  }
-
-  private getUserFriendlyMessage(error: Error): string {
-    // Map technical errors to user-friendly messages
-    const errorMessages = {
-      QuotaExceededError:
-        'Your storage quota has been exceeded. Please free up some space.',
-      InvalidChunkError:
-        'There was a problem with the file upload. Please try again.',
-      ProcessingError:
-        'We could not process your file. Please ensure it meets our requirements.',
-      StorageError:
-        'There was a problem storing your file. Please try again later.',
-      ValidationError:
-        'The provided information is invalid. Please check your input.',
-    };
-
-    return (
-      errorMessages[error.constructor.name] ||
-      'An unexpected error occurred. Please try again later.'
-    );
   }
 }

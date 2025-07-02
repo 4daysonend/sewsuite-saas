@@ -8,7 +8,7 @@ export interface StorageOptions {
    * Content type (MIME type) of the file
    */
   contentType?: string;
-  
+
   /**
    * Metadata to store with the file
    */
@@ -47,4 +47,9 @@ export interface StorageProvider {
    * Move/copy file to new location
    */
   moveFile(sourcePath: string, destinationPath: string): Promise<void>;
+
+  /**
+   * Check if file exists in storage
+   */
+  fileExists(path: string): Promise<boolean>;
 }

@@ -9,4 +9,5 @@ export interface EmailOptions {
     filename: string;
     content: any;
   }>;
+  priority?: 'high' | 'normal';
 }

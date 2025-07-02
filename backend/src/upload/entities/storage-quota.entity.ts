@@ -1,5 +1,5 @@
 import { Entity, Column, OneToOne, JoinColumn, Index } from 'typeorm';
-import { BaseEntity } from '../../common/base.entity';
+import { BaseEntity } from '../../common/entities/base.entity';
 import { User } from '../../users/entities/user.entity';
 import { FileCategory } from './file.entity';
 
@@ -92,12 +92,12 @@ export class StorageQuota extends BaseEntity {
    */
   get daysUntilReset(): number | null {
     if (!this.nextResetDate) return null;
-    
+
     const now = new Date();
     const resetDate = new Date(this.nextResetDate);
     const diffTime = resetDate.getTime() - now.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    
+
     return Math.max(0, diffDays);
   }
 }

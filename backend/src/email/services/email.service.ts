@@ -37,7 +37,17 @@ export class EmailService {
         removeOnComplete: true,
       });
     } catch (error) {
-      this.logger.error(`Failed to queue email: ${error.message}`);
+      this.logger.error(`Failed to queue email: ${(error as Error).message}`);
+      throw error;
+    }
+  }
+
+  private async sendEmail(options: EmailOptions): Promise<void> {
+    try {
+      await this.transporter.sendMail(options);
+      this.logger.log(`Email sent to ${options.to}`);
+    } catch (error) {
+      this.logger.error(`Failed to send email: ${(error as Error).message}`);
       throw error;
     }
   }
@@ -63,6 +73,14 @@ export class EmailService {
     );
 
     await this.queueEmail({
+      to: user.email,
+      subject: 'Order Confirmation',
+      html,
+      text,
+    });
+
+    // Optionally, send the email directly
+    await this.sendEmail({
       to: user.email,
       subject: 'Order Confirmation',
       html,
@@ -95,6 +113,14 @@ export class EmailService {
       html,
       text,
     });
+
+    // Optionally, send the email directly
+    await this.sendEmail({
+      to: user.email,
+      subject: `Order Status Update: ${updateData.newStatus}`,
+      html,
+      text,
+    });
   }
 
   async sendFittingReminder(
@@ -117,6 +143,14 @@ export class EmailService {
     );
 
     await this.queueEmail({
+      to: user.email,
+      subject: 'Upcoming Fitting Appointment Reminder',
+      html,
+      text,
+    });
+
+    // Optionally, send the email directly
+    await this.sendEmail({
       to: user.email,
       subject: 'Upcoming Fitting Appointment Reminder',
       html,
@@ -150,6 +184,14 @@ export class EmailService {
       html,
       text,
     });
+
+    // Optionally, send the email directly
+    await this.sendEmail({
+      to: user.email,
+      subject: 'Payment Confirmation',
+      html,
+      text,
+    });
   }
 
   async sendPaymentFailureNotification(
@@ -171,6 +213,15 @@ export class EmailService {
     );
 
     await this.queueEmail({
+      to: user.email,
+      subject: 'Payment Failed',
+      html,
+      text,
+      priority: 'high',
+    });
+
+    // Optionally, send the email directly
+    await this.sendEmail({
       to: user.email,
       subject: 'Payment Failed',
       html,
@@ -205,6 +256,53 @@ export class EmailService {
       html,
       text,
     });
+
+    // Optionally, send the email directly
+    await this.sendEmail({
+      to: user.email,
+      subject: 'File Upload Confirmation',
+      html,
+      text,
+    });
+  }
+
+  // Admin Notifications
+  async sendAdminNotification(notificationData: {
+    subject: string;
+    template: string;
+    data: any;
+  }): Promise<void> {
+    try {
+      const { html, text } = await this.templateService.renderTemplate(
+        notificationData.template,
+        notificationData.data,
+        'en', // Default locale for admin notifications
+      );
+
+      await this.queueEmail({
+        to:
+          this.configService.get('ADMIN_EMAIL') || 'default_admin@example.com',
+        subject: notificationData.subject,
+        html,
+        text,
+      });
+
+      this.logger.log(`Admin notification sent: ${notificationData.subject}`);
+
+      // Optionally, send the email directly
+      await this.sendEmail({
+        to:
+          this.configService.get('ADMIN_EMAIL') || 'default_admin@example.com',
+        subject: notificationData.subject,
+        html,
+        text,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to send admin notification: ${(error as Error).message}`,
+      );
+      throw error;
+    }
   }
 
   // Utility Methods

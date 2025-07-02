@@ -23,15 +23,21 @@ export class FileStorageService {
     private readonly encryptionService: FileEncryptionService,
   ) {
     // Initialize storage provider based on config
-    const storageType = this.configService.get<string>('STORAGE_PROVIDER', 's3');
-    
-    switch(storageType) {
+    const storageType = this.configService.get<string>(
+      'STORAGE_PROVIDER',
+      's3',
+    );
+
+    switch (storageType) {
       case 's3':
       default:
         this.storageProvider = new S3StorageProvider(configService);
     }
-    
-    this.urlExpirationMinutes = this.configService.get<number>('SIGNED_URL_EXPIRATION_MINUTES', 15);
+
+    this.urlExpirationMinutes = this.configService.get<number>(
+      'SIGNED_URL_EXPIRATION_MINUTES',
+      15,
+    );
   }
 
   /**
@@ -46,18 +52,20 @@ export class FileStorageService {
   ): Promise<string> {
     try {
       let buffer = fileBuffer;
-      let metadata: Record<string, any> = { ...options.metadata };
+      const metadata: Record<string, any> = { ...options.metadata };
 
       // Encrypt file if required
       if (options.encrypt) {
-        const { encryptedData, keyId } = await this.encryptionService.encryptFile(fileBuffer);
+        const { encryptedData, keyId } =
+          await this.encryptionService.encryptFile(fileBuffer);
         buffer = encryptedData;
         metadata.encrypted = true;
         metadata.encryptionKeyId = keyId;
       }
 
       // Generate path if not provided
-      const path = options.path || this.generateStoragePath(options.contentType);
+      const path =
+        options.path || this.generateStoragePath(options.contentType);
 
       // Upload file to storage
       await this.storageProvider.uploadFile(buffer, path, {
@@ -69,7 +77,7 @@ export class FileStorageService {
     } catch (error) {
       this.logger.error(
         `Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
       throw error;
     }
@@ -89,7 +97,7 @@ export class FileStorageService {
   ): Promise<string> {
     try {
       const path = `${fileEntity.category}/${fileEntity.id}/${fileEntity.originalName}`;
-      
+
       let fileBuffer = file;
       let encryptionKeyId: string | undefined;
 
@@ -113,7 +121,7 @@ export class FileStorageService {
       // Update file entity
       fileEntity.path = path;
       fileEntity.status = FileStatus.ACTIVE;
-      
+
       if (options.encrypt) {
         fileEntity.isEncrypted = true;
         fileEntity.encryptionKeyId = encryptionKeyId;
@@ -123,16 +131,16 @@ export class FileStorageService {
     } catch (error) {
       this.logger.error(
         `Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
-      
+
       fileEntity.status = FileStatus.FAILED;
       fileEntity.metadata = {
         ...fileEntity.metadata,
         uploadError: error instanceof Error ? error.message : 'Unknown error',
         uploadErrorTime: new Date().toISOString(),
       };
-      
+
       throw error;
     }
   }
@@ -142,19 +150,30 @@ export class FileStorageService {
    * @param file File or path to retrieve
    * @returns File buffer
    */
-  async getFileContent(file: File | { path: string; isEncrypted?: boolean; encryptionKeyId?: string }): Promise<Buffer> {
+  async getFileContent(
+    file:
+      | File
+      | { path: string; isEncrypted?: boolean; encryptionKeyId?: string },
+  ): Promise<Buffer> {
     try {
+      if (!file.path) {
+        throw new Error('File path is required');
+      }
+
       const fileBuffer = await this.storageProvider.downloadFile(file.path);
 
       if (file.isEncrypted && file.encryptionKeyId) {
-        return this.encryptionService.decryptFile(fileBuffer, file.encryptionKeyId);
+        return this.encryptionService.decryptFile(
+          fileBuffer,
+          file.encryptionKeyId,
+        );
       }
 
       return fileBuffer;
     } catch (error) {
       this.logger.error(
         `Failed to retrieve file: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
       throw error;
     }
@@ -167,23 +186,30 @@ export class FileStorageService {
    * @returns Signed URL and expiration date
    */
   async generateSignedUrl(
-    file: File | { path: string },
+    file: File | { path: string | null },
     expiresInMinutes?: number,
   ): Promise<{ url: string; expiresAt: Date }> {
     try {
+      if (!file.path) {
+        throw new Error('File path is required for generating a signed URL');
+      }
+
       const expiration = expiresInMinutes || this.urlExpirationMinutes;
       const expirationSeconds = expiration * 60;
-      
-      const url = await this.storageProvider.getSignedUrl(file.path, expirationSeconds);
-      
+
+      const url = await this.storageProvider.getSignedUrl(
+        file.path,
+        expirationSeconds,
+      );
+
       const expiresAt = new Date();
       expiresAt.setMinutes(expiresAt.getMinutes() + expiration);
-      
+
       return { url, expiresAt };
     } catch (error) {
       this.logger.error(
         `Failed to generate signed URL: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
       throw error;
     }
@@ -196,12 +222,15 @@ export class FileStorageService {
    */
   async moveFile(file: File, newPath: string): Promise<void> {
     try {
+      if (!file.path) {
+        throw new Error('File path is required for moving a file');
+      }
       await this.storageProvider.moveFile(file.path, newPath);
       file.path = newPath;
     } catch (error) {
       this.logger.error(
         `Failed to move file: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
       throw error;
     }
@@ -211,9 +240,11 @@ export class FileStorageService {
    * Delete file from storage
    * @param file File to delete
    */
-  async deleteFile(file: File | { path: string }): Promise<void> {
+  async deleteFile(file: File | { path: string | null }): Promise<void> {
     try {
-      await this.storageProvider.deleteFile(file.path);
+      if (file.path) {
+        await this.storageProvider.deleteFile(file.path);
+      }
 
       // Delete thumbnails if they exist (for File entities)
       if ('thumbnailPath' in file && file.thumbnailPath) {
@@ -223,13 +254,15 @@ export class FileStorageService {
       // Delete versions if they exist (for File entities)
       if ('versions' in file && file.versions && file.versions.length > 0) {
         await Promise.all(
-          file.versions.map(version => this.storageProvider.deleteFile(version.path))
+          file.versions.map((version) =>
+            this.storageProvider.deleteFile(version.path),
+          ),
         );
       }
     } catch (error) {
       this.logger.error(
         `Failed to delete file: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
       throw error;
     }
@@ -245,10 +278,10 @@ export class FileStorageService {
     const year = now.getFullYear();
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const day = String(now.getDate()).padStart(2, '0');
-    
+
     const uuid = crypto.randomUUID();
     const extension = this.getExtensionFromContentType(contentType);
-    
+
     return `uploads/${year}/${month}/${day}/${uuid}${extension ? `.${extension}` : ''}`;
   }
 
@@ -259,7 +292,7 @@ export class FileStorageService {
    */
   private getExtensionFromContentType(contentType?: string): string {
     if (!contentType) return '';
-    
+
     const extensionMap: Record<string, string> = {
       'image/jpeg': 'jpg',
       'image/png': 'png',
@@ -268,10 +301,29 @@ export class FileStorageService {
       'application/pdf': 'pdf',
       'text/plain': 'txt',
       'text/csv': 'csv',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+        'docx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+        'xlsx',
     };
-    
+
     return extensionMap[contentType] || '';
+  }
+
+  /**
+   * Check if a file exists at the given path
+   * @param tempPath Path to check
+   * @returns Boolean indicating if file exists
+   */
+  async fileExists(tempPath: string): Promise<boolean> {
+    try {
+      return await this.storageProvider.fileExists(tempPath);
+    } catch (error) {
+      this.logger.error(
+        `Error checking if file exists at path '${tempPath}': ${error instanceof Error ? error.message : 'Unknown error'}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      return false;
+    }
   }
 }

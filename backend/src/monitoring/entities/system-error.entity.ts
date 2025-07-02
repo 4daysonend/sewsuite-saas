@@ -18,10 +18,22 @@ export class SystemError {
   message: string;
 
   @Column({ nullable: true })
-  stack: string;
+  stack?: string;
 
-  @Column({ type: 'jsonb', nullable: true })
-  metadata: Record<string, any>;
+  @Column({ nullable: true })
+  component?: string;
+
+  @Column({ nullable: true })
+  userId?: string;
+
+  @Column({ nullable: true })
+  requestPath?: string;
+
+  @Column({ nullable: true })
+  requestMethod?: string;
+
+  @Column('json', { nullable: true })
+  metadata?: Record<string, any>;
 
   @CreateDateColumn()
   timestamp: Date;

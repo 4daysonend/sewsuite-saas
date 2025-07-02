@@ -28,7 +28,11 @@ export class ErrorLoggingService {
         timestamp: new Date(),
       });
     } catch (err) {
-      this.logger.error(`Failed to log error: ${err.message}`);
+      if (err instanceof Error) {
+        this.logger.error(`Failed to log error: ${err.message}`);
+      } else {
+        this.logger.error('Failed to log error: Unknown error');
+      }
     }
   }
 
@@ -51,22 +55,25 @@ export class ErrorLoggingService {
 
   private aggregateErrorCounts(errors: SystemError[]): Record<string, number> {
     return errors.reduce(
-      (acc, error) => ({
+      (acc: Record<string, number>, error) => ({
         ...acc,
         [error.type]: (acc[error.type] || 0) + 1,
       }),
-      {},
+      {} as Record<string, number>,
     );
   }
 
   private calculateErrorTrends(errors: SystemError[]): any[] {
     // Group errors by hour
-    const hourlyGroups = errors.reduce((acc, error) => {
-      const hour = error.timestamp.getHours();
-      if (!acc[hour]) acc[hour] = [];
-      acc[hour].push(error);
-      return acc;
-    }, {});
+    const hourlyGroups: { [hour: number]: SystemError[] } = errors.reduce(
+      (acc: { [hour: number]: SystemError[] }, error) => {
+        const hour = error.timestamp.getHours();
+        if (!acc[hour]) acc[hour] = [];
+        acc[hour].push(error);
+        return acc;
+      },
+      {} as { [hour: number]: SystemError[] },
+    );
 
     // Calculate trends
     return Object.entries(hourlyGroups).map(([hour, hourErrors]) => ({

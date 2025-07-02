@@ -18,11 +18,17 @@ export class FileEncryptionService {
   private readonly ivLength = 16;
   private readonly authTagLength = 16;
   private readonly masterKey: string;
+  private encryptedKeys: Map<string, Buffer> = new Map();
 
   constructor(private readonly configService: ConfigService) {
-    this.masterKey = this.configService.get<string>('ENCRYPTION_MASTER_KEY', '');
+    this.masterKey = this.configService.get<string>(
+      'ENCRYPTION_MASTER_KEY',
+      '',
+    );
     if (!this.masterKey) {
-      this.logger.warn('Encryption master key not configured, using development key');
+      this.logger.warn(
+        'Encryption master key not configured, using development key',
+      );
       // Use a development-only key - should be overridden in production
       this.masterKey = 'development-only-encryption-key-not-for-production';
     }
@@ -45,19 +51,16 @@ export class FileEncryptionService {
 
       // Encrypt the file
       const cipher = crypto.createCipheriv(this.algorithm, key, iv);
-      const encrypted = Buffer.concat([
-        cipher.update(file),
-        cipher.final(),
-      ]);
-      
+      const encrypted = Buffer.concat([cipher.update(file), cipher.final()]);
+
       // Get authentication tag
       const authTag = cipher.getAuthTag();
 
       // Combine IV, encrypted content, and auth tag
       const encryptedData = Buffer.concat([
-        iv,                  // First 16 bytes: IV
-        encrypted,           // Middle: Encrypted content
-        authTag,             // Last 16 bytes: Auth tag
+        iv, // First 16 bytes: IV
+        encrypted, // Middle: Encrypted content
+        authTag, // Last 16 bytes: Auth tag
       ]);
 
       return {
@@ -67,7 +70,7 @@ export class FileEncryptionService {
     } catch (error) {
       this.logger.error(
         `Failed to encrypt file: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
       throw error;
     }
@@ -83,10 +86,12 @@ export class FileEncryptionService {
     try {
       // Extract IV, encrypted content, and auth tag
       const iv = encryptedFile.subarray(0, this.ivLength);
-      const authTag = encryptedFile.subarray(encryptedFile.length - this.authTagLength);
+      const authTag = encryptedFile.subarray(
+        encryptedFile.length - this.authTagLength,
+      );
       const encryptedContent = encryptedFile.subarray(
         this.ivLength,
-        encryptedFile.length - this.authTagLength
+        encryptedFile.length - this.authTagLength,
       );
 
       // Retrieve the encryption key
@@ -103,7 +108,7 @@ export class FileEncryptionService {
     } catch (error) {
       this.logger.error(
         `Failed to decrypt file: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
       throw error;
     }
@@ -118,23 +123,31 @@ export class FileEncryptionService {
     try {
       // In a production environment, you would use a secure key management service
       // like AWS KMS, Azure Key Vault, or HashiCorp Vault
-      
+
       // For development purposes, we'll encrypt the key with the master key
-      const masterKeyHash = crypto.createHash('sha256').update(this.masterKey).digest();
-      const cipher = crypto.createCipheriv('aes-256-cbc', masterKeyHash, Buffer.alloc(16, 0));
+      const masterKeyHash = crypto
+        .createHash('sha256')
+        .update(this.masterKey)
+        .digest();
+      const cipher = crypto.createCipheriv(
+        'aes-256-cbc',
+        masterKeyHash,
+        Buffer.alloc(16, 0),
+      );
       const encryptedKey = Buffer.concat([cipher.update(key), cipher.final()]);
-      
+
+      // Store the encrypted key in memory
+      this.encryptedKeys.set(keyId, encryptedKey);
+
+      this.logger.debug(`Key ${keyId} stored in memory (for development only)`);
+
       // In a real implementation, save this to a secure database
-      // For now, log that we're simulating key storage
-      this.logger.debug(`Simulating secure storage of key: ${keyId}`);
-      
-      // Here we would typically store the encrypted key in a secure database
-      // For development, we're keeping keys in memory
+      // For now, we're keeping keys in memory
       // In production, implement proper key storage
     } catch (error) {
       this.logger.error(
         `Failed to store encryption key: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
       throw error;
     }
@@ -147,48 +160,48 @@ export class FileEncryptionService {
    */
   private async retrieveEncryptionKey(keyId: string): Promise<Buffer> {
     try {
-      // In a production environment, you would retrieve from a secure key management service
-      
-      // For development, we'll derive the key deterministically from the keyId and master key
-      // This is NOT secure for production use
+      // Check if key exists in map
+      if (this.encryptedKeys.has(keyId)) {
+        const encryptedKey = this.encryptedKeys.get(keyId);
+
+        // Type guard to ensure encryptedKey is defined
+        if (!encryptedKey) {
+          throw new Error(`Key ${keyId} exists in map but value is undefined`);
+        }
+
+        // Decrypt the key using the master key
+        const masterKeyHash = crypto
+          .createHash('sha256')
+          .update(this.masterKey)
+          .digest();
+
+        const decipher = crypto.createDecipheriv(
+          'aes-256-cbc',
+          masterKeyHash,
+          Buffer.alloc(16, 0),
+        );
+
+        return Buffer.concat([decipher.update(encryptedKey), decipher.final()]);
+      }
+
+      // If we don't have the key in memory, use a deterministic derivation
+      // This is for development only - in production use a proper key storage system
+      this.logger.warn(
+        `Key ${keyId} not found in memory, using deterministic derivation (not secure for production)`,
+      );
+
       const combinedKey = `${this.masterKey}:${keyId}`;
       return crypto.pbkdf2Sync(
         combinedKey,
         keyId,
         10000,
         this.keyLength,
-        'sha256'
+        'sha256',
       );
     } catch (error) {
       this.logger.error(
         `Failed to retrieve encryption key: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
-      );
-      throw error;
-    }
-  }
-
-  /**
-   * Rotate encryption key
-   * @param oldKeyId Current key ID
-   * @returns New key ID
-   */
-  async rotateEncryptionKey(oldKeyId: string): Promise<string> {
-    try {
-      // Get the current key
-      const currentKey = await this.retrieveEncryptionKey(oldKeyId);
-      
-      // Generate a new key ID
-      const newKeyId = crypto.randomBytes(16).toString('hex');
-      
-      // Store the same key under a new ID
-      await this.storeEncryptionKey(newKeyId, currentKey);
-      
-      return newKeyId;
-    } catch (error) {
-      this.logger.error(
-        `Failed to rotate encryption key: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
       throw error;
     }

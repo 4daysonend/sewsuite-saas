@@ -1,7 +1,7 @@
 import { compile } from 'handlebars';
 import { baseTemplate } from './base.templates';
 
-const orderCreationTemplate = `
+const orderCreationTemplateEn = `
   ${baseTemplate}
   {{#with data}}
   <h2>Order Confirmation</h2>
@@ -18,7 +18,7 @@ const orderCreationTemplate = `
   {{/with}}
 `;
 
-const orderStatusTemplate = `
+const orderStatusTemplateEn = `
   ${baseTemplate}
   {{#with data}}
   <h2>Order Status Update</h2>
@@ -50,7 +50,16 @@ const orderConfirmationTemplate = `
 `;
 
 export const orderTemplates = {
-  orderCreation: compile(orderCreationTemplate),
-  orderStatusUpdate: compile(orderStatusTemplate),
-  orderConfirmation: compile(orderConfirmationTemplate)
+  orderCreation: {
+    en: compile(orderCreationTemplateEn),
+    // Add other locales as needed
+  },
+  orderStatusUpdate: {
+    en: compile(orderStatusTemplateEn),
+    // Add other locales as needed
+  },
+  orderConfirmation: {
+    en: compile(orderConfirmationTemplate),
+    // Add other locales as needed
+  },
 };

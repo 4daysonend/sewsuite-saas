@@ -3,8 +3,8 @@ import { Logger, Injectable } from '@nestjs/common';
 import { Job } from 'bull';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import * as sharp from 'sharp';
-import * as pdfParse from 'pdf-parse';
+import sharp from 'sharp';
+import pdfParse from 'pdf-parse';
 import { File, FileStatus } from '../entities/file.entity';
 import { FileStorageService } from '../services/file-storage.service';
 
@@ -40,12 +40,14 @@ export class FileProcessor {
   @Process('generate-thumbnails')
   async generateThumbnails(job: Job<GenerateThumbnailsJob>): Promise<void> {
     const { fileId, sizes } = job.data;
-    this.logger.debug(`Generating thumbnails for file: ${fileId}, sizes: ${sizes.join(', ')}`);
+    this.logger.debug(
+      `Generating thumbnails for file: ${fileId}, sizes: ${sizes.join(', ')}`,
+    );
 
     try {
       // Get file
       const file = await this.fileRepository.findOne({
-        where: { id: fileId }
+        where: { id: fileId },
       });
 
       if (!file) {
@@ -62,7 +64,12 @@ export class FileProcessor {
       const metadata = await image.metadata();
 
       // Generate thumbnails
-      const thumbnails: { size: number; path: string; width: number; height: number }[] = [];
+      const thumbnails: {
+        size: number;
+        path: string;
+        width: number;
+        height: number;
+      }[] = [];
 
       for (const size of sizes) {
         // Calculate dimensions while preserving aspect ratio
@@ -83,10 +90,12 @@ export class FileProcessor {
         }
 
         // Generate thumbnail
-        const thumbnail = await image.resize(width, height, {
-          fit: 'inside',
-          withoutEnlargement: true,
-        }).toBuffer();
+        const thumbnail = await image
+          .resize(width, height, {
+            fit: 'inside',
+            withoutEnlargement: true,
+          })
+          .toBuffer();
 
         // Upload thumbnail
         const thumbnailPath = await this.storageService.uploadFile(thumbnail, {
@@ -112,20 +121,23 @@ export class FileProcessor {
       // Set main thumbnail if none exists
       if (!file.thumbnailPath && thumbnails.length > 0) {
         // Use smallest thumbnail as main
-        const mainThumbnail = thumbnails.reduce((smallest, current) => 
-          current.size < smallest.size ? current : smallest
+        const mainThumbnail = thumbnails.reduce((smallest, current) =>
+          current.size < smallest.size ? current : smallest,
         );
         file.thumbnailPath = mainThumbnail.path;
       }
 
+      file.status = FileStatus.PROCESSED; // After successful thumbnail generation
       await this.fileRepository.save(file);
-      this.logger.debug(`Generated ${thumbnails.length} thumbnails for file: ${fileId}`);
+      this.logger.debug(
+        `Generated ${thumbnails.length} thumbnails for file: ${fileId}`,
+      );
     } catch (error) {
       this.logger.error(
         `Failed to generate thumbnails: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
-      
+
       throw error;
     }
   }
@@ -142,7 +154,7 @@ export class FileProcessor {
     try {
       // Get file
       const file = await this.fileRepository.findOne({
-        where: { id: fileId }
+        where: { id: fileId },
       });
 
       if (!file) {
@@ -163,7 +175,7 @@ export class FileProcessor {
         pageCount: pdfData.numpages,
         pdfInfo: pdfData.info,
         pdfMetadata: pdfData.metadata,
-        pdfVersion: pdfData.pdfVersion,
+        pdfVersion: pdfData.version,
         processingCompleted: true,
         processingCompletedAt: new Date().toISOString(),
       };
@@ -176,14 +188,14 @@ export class FileProcessor {
       // Update file record
       file.metadata = metadata;
       await this.fileRepository.save(file);
-      
+
       this.logger.debug(`Extracted metadata from PDF file: ${fileId}`);
     } catch (error) {
       this.logger.error(
         `Failed to extract PDF metadata: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
-      
+
       throw error;
     }
   }
@@ -194,13 +206,13 @@ export class FileProcessor {
    */
   @Process('generate-pdf-thumbnail')
   async generatePdfThumbnail(job: Job<GeneratePdfThumbnailJob>): Promise<void> {
-    const { fileId, filePath } = job.data;
+    const { fileId } = job.data;
     this.logger.debug(`Generating thumbnail for PDF: ${fileId}`);
 
     try {
       // Get file
       const file = await this.fileRepository.findOne({
-        where: { id: fileId }
+        where: { id: fileId },
       });
 
       if (!file) {
@@ -213,15 +225,20 @@ export class FileProcessor {
 
       // For production, you would use a PDF rendering library like pdf2pic or pdf-poppler
       // For this implementation, we'll simulate PDF thumbnail generation
-      
+
       // Create a placeholder thumbnail
-      const thumbnailBuffer = await this.createPdfThumbnailPlaceholder(file.metadata?.pageCount || 1);
-      
+      const thumbnailBuffer = await this.createPdfThumbnailPlaceholder(
+        file.metadata?.pageCount || 1,
+      );
+
       // Upload thumbnail
-      const thumbnailPath = await this.storageService.uploadFile(thumbnailBuffer, {
-        path: `${file.category}/${file.id}/thumbnail.jpg`,
-        contentType: 'image/jpeg',
-      });
+      const thumbnailPath = await this.storageService.uploadFile(
+        thumbnailBuffer,
+        {
+          path: `${file.category}/${file.id}/thumbnail.jpg`,
+          contentType: 'image/jpeg',
+        },
+      );
 
       // Update file record
       file.thumbnailPath = thumbnailPath;
@@ -236,27 +253,30 @@ export class FileProcessor {
     } catch (error) {
       this.logger.error(
         `Failed to generate PDF thumbnail: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
-      
+
       // Update file status but don't fail the job
       try {
         const file = await this.fileRepository.findOne({
-          where: { id: fileId }
+          where: { id: fileId },
         });
-        
+
         if (file) {
           file.metadata = {
             ...file.metadata,
-            thumbnailError: error instanceof Error ? error.message : 'Unknown error',
+            thumbnailError:
+              error instanceof Error ? error.message : 'Unknown error',
             thumbnailErrorTime: new Date().toISOString(),
           };
           await this.fileRepository.save(file);
         }
       } catch (updateError) {
-        this.logger.error(`Failed to update file with thumbnail error: ${updateError instanceof Error ? updateError.message : 'Unknown error'}`);
+        this.logger.error(
+          `Failed to update file with thumbnail error: ${updateError instanceof Error ? updateError.message : 'Unknown error'}`,
+        );
       }
-      
+
       throw error;
     }
   }
@@ -266,36 +286,38 @@ export class FileProcessor {
    * @param pageCount Number of pages in PDF
    * @returns Thumbnail buffer
    */
-  private async createPdfThumbnailPlaceholder(pageCount: number): Promise<Buffer> {
+  private async createPdfThumbnailPlaceholder(
+    pageCount: number,
+  ): Promise<Buffer> {
     // Create a placeholder image for PDF
     const width = 600;
     const height = 800;
-    
+
     return sharp({
       create: {
         width,
         height,
         channels: 4,
-        background: { r: 255, g: 255, b: 255, alpha: 1 }
-      }
+        background: { r: 255, g: 255, b: 255, alpha: 1 },
+      },
     })
-    .composite([
-      {
-        input: Buffer.from(
-          `<svg width="${width}" height="${height}">
+      .composite([
+        {
+          input: Buffer.from(
+            `<svg width="${width}" height="${height}">
             <rect width="100%" height="100%" fill="#f0f0f0"/>
             <rect x="50" y="50" width="${width - 100}" height="${height - 100}" stroke="#cccccc" stroke-width="2" fill="#ffffff"/>
-            <text x="${width/2}" y="${height/2 - 40}" font-family="Arial" font-size="24" text-anchor="middle" fill="#555555">PDF Document</text>
-            <text x="${width/2}" y="${height/2 + 40}" font-family="Arial" font-size="18" text-anchor="middle" fill="#777777">${pageCount} page${pageCount !== 1 ? 's' : ''}</text>
+            <text x="${width / 2}" y="${height / 2 - 40}" font-family="Arial" font-size="24" text-anchor="middle" fill="#555555">PDF Document</text>
+            <text x="${width / 2}" y="${height / 2 + 40}" font-family="Arial" font-size="18" text-anchor="middle" fill="#777777">${pageCount} page${pageCount !== 1 ? 's' : ''}</text>
           </svg>`,
-          'utf-8'
-        ),
-        top: 0,
-        left: 0,
-      }
-    ])
-    .jpeg({ quality: 90 })
-    .toBuffer();
+            'utf-8',
+          ),
+          top: 0,
+          left: 0,
+        },
+      ])
+      .jpeg({ quality: 90 })
+      .toBuffer();
   }
 
   /**
@@ -315,26 +337,36 @@ export class FileProcessor {
         try {
           // Find all temporary files with this ID prefix
           const tempPath = `temp/${fileId}`;
-          
+
           // Check if path exists and delete
-          const pathExists = await this.storageService.fileExists(tempPath);
-          if (pathExists) {
-            await this.storageService.deleteFile(tempPath);
+          try {
+            await this.storageService.fileExists(tempPath);
+            // If no error was thrown, the file exists
+            await this.storageService.deleteFile({ path: tempPath });
             successCount++;
+          } catch (error) {
+            // File doesn't exist, skip deletion
+            this.logger.debug(
+              `File ${tempPath} does not exist, skipping deletion`,
+            );
           }
         } catch (error) {
-          this.logger.warn(`Failed to clean up temp file ${fileId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+          this.logger.warn(
+            `Failed to clean up temp file ${fileId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          );
           failureCount++;
         }
       }
 
-      this.logger.debug(`Cleanup complete. Successful: ${successCount}, Failed: ${failureCount}`);
+      this.logger.debug(
+        `Cleanup complete. Successful: ${successCount}, Failed: ${failureCount}`,
+      );
     } catch (error) {
       this.logger.error(
         `Failed to clean up temporary files: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
-      
+
       throw error;
     }
   }
