@@ -1,18 +1,18 @@
 // /backend/src/orders/controllers/orders.controller.ts
 import {
   Controller,
+  Get,
   Post,
   Body,
-  Param,
-  Get,
-  UseGuards,
-  Req,
   Put,
+  Param,
   Query,
-  ParseUUIDPipe,
+  Req,
+  UseGuards,
   DefaultValuePipe,
   ParseIntPipe,
 } from '@nestjs/common';
+import { ParseUUIDPipe } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
@@ -22,24 +22,27 @@ import {
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
-import { OrdersService } from '../orders.service';
+import { Roles } from '../../auth/decorators/roles.decorator';
+import { OrdersService } from '../services/orders.service';
 import { CreateOrderDto } from '../dto/create-order.dto';
 import { UpdateOrderStatusDto } from '../dto/update-order-status.dto';
 import { Order, OrderStatus } from '../entities/order.entity';
-import { Pagination } from '../../common/interfaces/pagination.interface';
+import { RequestWithUser } from '../../common/interfaces/request-with-user.interface';
+import { Pagination, IPaginationMeta } from 'nestjs-typeorm-paginate';
 
 @ApiTags('orders')
 @Controller('orders')
 @UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('customer') // Base role - everyone with a customer role or higher can access
 @ApiBearerAuth()
 export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
   @Post()
   @ApiOperation({ summary: 'Create new order' })
-  @ApiResponse({ status: 201, type: Order })
+  @Roles('customer', 'tailor', 'admin', 'superadmin')
   async createOrder(
-    @Req() req,
+    @Req() req: RequestWithUser,
     @Body() createOrderDto: CreateOrderDto,
   ): Promise<Order> {
     return this.ordersService.createOrder(req.user.id, createOrderDto);
@@ -48,6 +51,7 @@ export class OrdersController {
   @Post(':id/payment')
   @ApiOperation({ summary: 'Initiate payment for order' })
   @ApiResponse({ status: 200, description: 'Returns client secret for Stripe' })
+  @Roles('customer', 'tailor', 'admin', 'superadmin')
   async initiatePayment(
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<{ clientSecret: string }> {
@@ -57,12 +61,18 @@ export class OrdersController {
   @Put(':id/status')
   @ApiOperation({ summary: 'Update order status' })
   @ApiResponse({ status: 200, type: Order })
+  @Roles('tailor', 'admin', 'superadmin') // Only tailors and above can update status
   async updateStatus(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() updateOrderStatusDto: UpdateOrderStatusDto,
-    @Req() req,
+    @Req() req: RequestWithUser,
   ): Promise<Order> {
-    return this.ordersService.updateOrderStatus(id, updateOrderStatusDto);
+    return this.ordersService.updateOrderStatus(
+      id,
+      updateOrderStatusDto,
+      req.user.id,
+      req.user.role,
+    );
   }
 
   @Get()
@@ -75,7 +85,10 @@ export class OrdersController {
   @ApiQuery({ name: 'minAmount', required: false, type: Number })
   @ApiQuery({ name: 'maxAmount', required: false, type: Number })
   @ApiQuery({ name: 'search', required: false, type: String })
+  @Roles('customer', 'tailor', 'admin', 'superadmin')
+  // The service will filter based on role - admins see all, others see their own
   async findAll(
+    @Req() req: RequestWithUser,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number,
     @Query('status') status?: OrderStatus,
@@ -84,8 +97,7 @@ export class OrdersController {
     @Query('minAmount') minAmount?: number,
     @Query('maxAmount') maxAmount?: number,
     @Query('search') search?: string,
-    @Req() req,
-  ): Promise<Pagination<Order>> {
+  ): Promise<Pagination<Order, IPaginationMeta>> {
     return this.ordersService.findAll({
       page,
       limit,
@@ -102,10 +114,11 @@ export class OrdersController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Get order by ID' })
-  @ApiResponse({ status: 200, type: Order })
+  @Roles('customer', 'tailor', 'admin', 'superadmin')
+  // The service handles permission checking based on ownership and role
   async findOne(
     @Param('id', ParseUUIDPipe) id: string,
-    @Req() req,
+    @Req() req: RequestWithUser,
   ): Promise<Order> {
     return this.ordersService.findOne(id, req.user.id, req.user.role);
   }
@@ -113,10 +126,12 @@ export class OrdersController {
   @Post(':id/cancel')
   @ApiOperation({ summary: 'Cancel order' })
   @ApiResponse({ status: 200, type: Order })
+  @Roles('customer', 'tailor', 'admin', 'superadmin')
+  // The service will check if user has right to cancel based on role and ownership
   async cancelOrder(
     @Param('id', ParseUUIDPipe) id: string,
     @Body('reason') reason: string,
-    @Req() req,
+    @Req() req: RequestWithUser,
   ): Promise<Order> {
     return this.ordersService.cancelOrder(
       id,
@@ -128,8 +143,11 @@ export class OrdersController {
 
   @Get(':id/history')
   @ApiOperation({ summary: 'Get order history' })
-  @ApiResponse({ status: 200, description: 'Order history' })
-  async getOrderHistory(@Param('id', ParseUUIDPipe) id: string, @Req() req) {
+  @Roles('customer', 'tailor', 'admin', 'superadmin')
+  async getOrderHistory(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: RequestWithUser,
+  ) {
     return this.ordersService.getOrderHistory(id, req.user.id, req.user.role);
   }
 }

@@ -56,6 +56,16 @@ export class SubscriptionIntegrationService {
   ): Promise<void> {
     const features = this.getSubscriptionFeatures(subscription);
 
+    // Initialize preferences if they don't exist
+    if (!user.preferences) {
+      user.preferences = {};
+    }
+
+    // Initialize features if they don't exist
+    if (!user.preferences.features) {
+      user.preferences.features = {};
+    }
+
     user.preferences = {
       ...user.preferences,
       features: {

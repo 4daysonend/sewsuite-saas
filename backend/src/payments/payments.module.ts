@@ -1,35 +1,22 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { PaymentsService } from './payments.service';
-import { RefundService } from './refund.service';
-import { SubscriptionService } from './subscription.service';
-import { PaymentAnalyticsService } from './analytics.service';
+import { WebhookController } from './controllers/webhook.controller';
+import { CheckoutController } from './controllers/checkout.controller';
+import { PaymentsService } from './services/payments.service';
+import { StripeService } from './services/stripe.service';
 import { Payment } from './entities/payment.entity';
 import { Subscription } from './entities/subscription.entity';
-import { OrdersModule } from '../orders/orders.module';
-import { EmailModule } from '../email/email.module';
-import { UsersModule } from '../users/users.module';
+import { CommonModule } from '../common/common.module';
+import { ConfigModule } from '@nestjs/config';
 
 @Module({
   imports: [
-    ConfigModule,
     TypeOrmModule.forFeature([Payment, Subscription]),
-    OrdersModule,
-    EmailModule,
-    UsersModule,
+    CommonModule,
+    ConfigModule,
   ],
-  providers: [
-    PaymentsService,
-    RefundService,
-    SubscriptionService,
-    PaymentAnalyticsService,
-  ],
-  exports: [
-    PaymentsService,
-    RefundService,
-    SubscriptionService,
-    PaymentAnalyticsService,
-  ],
+  controllers: [CheckoutController, WebhookController],
+  providers: [PaymentsService, StripeService],
+  exports: [PaymentsService],
 })
 export class PaymentsModule {}

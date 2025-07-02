@@ -51,9 +51,11 @@ describe('RefundService', () => {
     }).compile();
 
     service = module.get<RefundService>(RefundService);
-    paymentRepository = module.get<Repository<Payment>>(getRepositoryToken(Payment));
+    paymentRepository = module.get<Repository<Payment>>(
+      getRepositoryToken(Payment),
+    );
     emailService = module.get<EmailService>(EmailService);
-    
+
     // Setup mock Stripe client
     (service as any).stripe = {
       refunds: {
@@ -64,7 +66,9 @@ describe('RefundService', () => {
 
   describe('createRefund', () => {
     it('should process refund successfully', async () => {
-      jest.spyOn(paymentRepository, 'findOne').mockResolvedValue(mockPayment as Payment);
+      jest
+        .spyOn(paymentRepository, 'findOne')
+        .mockResolvedValue(mockPayment as Payment);
 
       const mockRefund = {
         id: 're_123',
@@ -73,16 +77,19 @@ describe('RefundService', () => {
 
       // Mock Stripe refund creation
       (service as any).stripe.refunds.create.mockResolvedValue(mockRefund);
-      
+
       // Mock repository save
-      jest.spyOn(paymentRepository, 'save').mockImplementation((payment) => 
+      jest.spyOn(paymentRepository, 'save').mockImplementation((payment) =>
         Promise.resolve({
           ...payment,
-          status: PaymentStatus.REFUNDED
-        } as Payment)
+          status: PaymentStatus.REFUNDED,
+        } as Payment),
       );
 
-      const result = await service.createRefund(mockPayment.id, mockRefund.amount);
+      const result = await service.createRefund(
+        mockPayment.id,
+        mockRefund.amount,
+      );
 
       expect(result.status).toBe(PaymentStatus.REFUNDED);
       expect(emailService.sendRefundNotification).toHaveBeenCalled();
@@ -99,22 +106,30 @@ describe('RefundService', () => {
     it('should handle payment not found', async () => {
       jest.spyOn(paymentRepository, 'findOne').mockResolvedValue(null);
 
-      await expect(service.createRefund('invalid_id', 1000)).rejects.toThrow('Payment not found');
+      await expect(service.createRefund('invalid_id', 1000)).rejects.toThrow(
+        'Payment not found',
+      );
     });
 
     it('should handle Stripe refund failure', async () => {
-      jest.spyOn(paymentRepository, 'findOne').mockResolvedValue(mockPayment as Payment);
+      jest
+        .spyOn(paymentRepository, 'findOne')
+        .mockResolvedValue(mockPayment as Payment);
 
       // Mock Stripe refund failure
       (service as any).stripe.refunds.create.mockRejectedValue(
-        new Error('Refund failed')
+        new Error('Refund failed'),
       );
 
-      await expect(service.createRefund(mockPayment.id, 1000)).rejects.toThrow('Refund failed');
+      await expect(service.createRefund(mockPayment.id, 1000)).rejects.toThrow(
+        'Refund failed',
+      );
     });
-    
+
     it('should handle partial refunds', async () => {
-      jest.spyOn(paymentRepository, 'findOne').mockResolvedValue(mockPayment as Payment);
+      jest
+        .spyOn(paymentRepository, 'findOne')
+        .mockResolvedValue(mockPayment as Payment);
 
       const mockRefund = {
         id: 're_123',
@@ -123,8 +138,11 @@ describe('RefundService', () => {
 
       // Mock Stripe refund creation
       (service as any).stripe.refunds.create.mockResolvedValue(mockRefund);
-      
-      const result = await service.createRefund(mockPayment.id, mockRefund.amount);
+
+      const result = await service.createRefund(
+        mockPayment.id,
+        mockRefund.amount,
+      );
 
       expect(paymentRepository.save).toHaveBeenCalledWith(
         expect.objectContaining({

@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, LessThan } from 'typeorm';
-import { Payment, PaymentStatus } from './entities/payment.entity';
-import { Subscription, SubscriptionStatus } from './entities/subscription.entity';
+import { Repository, Between, LessThan, In, FindOptionsWhere } from 'typeorm';
+import { Payment } from './entities/payment.entity';
+import { PaymentStatus } from './enums/payment-status.enum';
+import { Subscription } from './entities/subscription.entity';
+import { SubscriptionStatus } from './enums/subscription-status.enum';
 
 interface RevenueMetrics {
   totalRevenue: number;
@@ -19,10 +21,9 @@ interface SubscriptionMetrics {
   monthlyRecurringRevenue: number;
 }
 
-interface SubscriptionRevenue {
-  priceId: string;
-  count: number;
-  revenue: number;
+interface MonthCountResult {
+  month: string | null;
+  count: string | null;
 }
 
 @Injectable()
@@ -42,7 +43,10 @@ export class PaymentAnalyticsService {
    * @param endDate End of period
    * @returns RevenueMetrics object with analytics
    */
-  async getRevenueMetrics(startDate: Date, endDate: Date): Promise<RevenueMetrics> {
+  async getRevenueMetrics(
+    startDate: Date,
+    endDate: Date,
+  ): Promise<RevenueMetrics> {
     try {
       const payments = await this.paymentRepository
         .createQueryBuilder('payment')
@@ -60,7 +64,8 @@ export class PaymentAnalyticsService {
         0,
       );
       const transactionCount = payments.length;
-      const averageOrderValue = transactionCount > 0 ? totalRevenue / transactionCount : 0;
+      const averageOrderValue =
+        transactionCount > 0 ? totalRevenue / transactionCount : 0;
 
       return {
         totalRevenue,
@@ -86,7 +91,9 @@ export class PaymentAnalyticsService {
     try {
       const [activeSubscriptions, totalSubscriptions] = await Promise.all([
         this.subscriptionRepository.count({
-          where: { status: SubscriptionStatus.ACTIVE },
+          where: {
+            status: SubscriptionStatus.ACTIVE,
+          } as FindOptionsWhere<Subscription>, // Type assertion
         }),
         this.subscriptionRepository.count(),
       ]);
@@ -120,40 +127,47 @@ export class PaymentAnalyticsService {
         .createQueryBuilder('subscription')
         .select('subscription.stripePriceId', 'priceId')
         .addSelect('COUNT(*)', 'count')
-        .where('subscription.status = :status', { status: SubscriptionStatus.ACTIVE })
+        .where('subscription.status = :status', {
+          status: SubscriptionStatus.ACTIVE,
+        })
         .groupBy('subscription.stripePriceId')
         .getRawMany<{ priceId: string; count: string }>();
 
       // Get price information from metadata
       const subscriptions = await this.subscriptionRepository.find({
         where: { status: SubscriptionStatus.ACTIVE },
-        select: ['stripePriceId', 'metadata'],
+        select: ['stripePriceId', 'metadata'], // Changed to stripePriceId
       });
 
       // Create a price map for quick lookups
       const priceMap = new Map<string, number>();
       for (const sub of subscriptions) {
-        if (sub.metadata?.priceData?.unitAmount) {
-          priceMap.set(sub.stripePriceId, sub.metadata.priceData.unitAmount / 100);
+        if (sub.metadata?.priceData?.unitAmount && sub.stripePriceId) {
+          // Changed to stripePriceId
+          priceMap.set(
+            sub.stripePriceId, // Changed to stripePriceId
+            sub.metadata.priceData.unitAmount / 100,
+          );
         }
       }
 
       // Calculate total MRR
       return subscriptionRevenue.reduce((total, item) => {
-        const count = parseInt(item.count, 10);
         const price = priceMap.get(item.priceId) || 0;
-        return total + (count * price);
+        const count = parseInt(item.count, 10);
+        return total + price * count;
       }, 0);
     } catch (error) {
       this.logger.error(
-        `Failed to calculate MRR: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to calculate MRR: ${error instanceof Error ? error.message : String(error)}`,
+        error instanceof Error ? error.stack : undefined,
       );
-      return 0;
+      return 0; // Return 0 on error
     }
   }
 
   /**
-   * Calculate churn rate over the last 30 days
+   * Calculate the churn rate over the last 30 days
    * @returns Churn rate as a percentage
    */
   private async calculateChurnRate(): Promise<number> {
@@ -161,25 +175,49 @@ export class PaymentAnalyticsService {
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
+      // Get counts of canceled and active subscriptions
       const [canceledSubscriptions, totalActiveStart] = await Promise.all([
+        // Count subscriptions canceled in the last 30 days
         this.subscriptionRepository.count({
           where: {
             canceledAt: Between(thirtyDaysAgo, new Date()),
             status: SubscriptionStatus.CANCELED,
           },
         }),
+        // Count subscriptions that were active at the start of the period
         this.subscriptionRepository.count({
-          where: {
-            createdAt: LessThan(thirtyDaysAgo),
-            status: SubscriptionStatus.ACTIVE,
-          },
+          where: [
+            {
+              createdAt: LessThan(thirtyDaysAgo),
+              status: In([
+                SubscriptionStatus.ACTIVE,
+                SubscriptionStatus.PAST_DUE,
+                SubscriptionStatus.TRIAL,
+              ]),
+            },
+          ],
         }),
       ]);
 
-      return totalActiveStart > 0 ? (canceledSubscriptions / totalActiveStart) * 100 : 0;
+      // Calculate churn rate
+      const churnRate =
+        totalActiveStart > 0
+          ? (canceledSubscriptions / totalActiveStart) * 100
+          : 0;
+
+      this.logger.debug(
+        `Churn rate calculation: ${canceledSubscriptions} canceled out of ${totalActiveStart} active = ${churnRate.toFixed(2)}%`,
+      );
+
+      return churnRate;
     } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+      const errorStack = error instanceof Error ? error.stack : undefined;
+
       this.logger.error(
-        `Failed to calculate churn rate: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to calculate churn rate: ${errorMessage}`,
+        errorStack,
       );
       return 0;
     }
@@ -198,7 +236,7 @@ export class PaymentAnalyticsService {
     try {
       const paymentMethodData = await this.paymentRepository
         .createQueryBuilder('payment')
-        .select('payment.metadata->\'paymentMethod\' as method')
+        .select("payment.metadata->'paymentMethod' as method")
         .addSelect('SUM(payment.amount)', 'amount')
         .where('payment.createdAt BETWEEN :startDate AND :endDate', {
           startDate,
@@ -231,7 +269,7 @@ export class PaymentAnalyticsService {
    * @param days Number of days to analyze
    * @returns Daily transaction data
    */
-  async getDailyTransactionTrends(days = 30): Promise
+  async getDailyTransactionTrends(days = 30): Promise<
     Array<{
       date: string;
       count: number;
@@ -293,46 +331,47 @@ export class PaymentAnalyticsService {
    * @param months Number of months to analyze
    * @returns Monthly subscription growth data
    */
-  async getSubscriptionGrowthMetrics(months = 12): Promise
-    Array<{
-      month: string;
-      newSubscriptions: number;
-      canceledSubscriptions: number;
-      netGrowth: number;
-      totalActive: number;
-    }>
-  > {
+  async getSubscriptionAnalytics(months: number): Promise<{
+    newSubscriptions: { month: string; count: string }[];
+    canceledSubscriptions: { month: string; count: string }[];
+    netGrowth: number;
+    totalActive: number;
+  }> {
     try {
+      // Declare startDate and initialize it
       const startDate = new Date();
       startDate.setMonth(startDate.getMonth() - months);
       startDate.setDate(1);
       startDate.setHours(0, 0, 0, 0);
 
-      // Get new subscriptions by month
+      // Ensure subscriptionRepository is defined
+      if (!this.subscriptionRepository) {
+        throw new Error('subscriptionRepository is not initialized.');
+      }
+
+      // Fetch new subscriptions
       const newSubscriptions = await this.subscriptionRepository
         .createQueryBuilder('subscription')
-        .select('DATE_TRUNC(\'month\', subscription.createdAt)', 'month')
-        .addSelect('COUNT(*)', 'count')
+        .select("DATE_TRUNC('month', subscription.createdAt) AS month")
+        .addSelect('COUNT(*) AS count')
         .where('subscription.createdAt >= :startDate', { startDate })
         .groupBy('month')
         .orderBy('month', 'ASC')
-        .getRawMany<{ month: string; count: string }>();
+        .getRawMany<MonthCountResult>();
 
-      // Get canceled subscriptions by month
+      // Fetch canceled subscriptions
       const canceledSubscriptions = await this.subscriptionRepository
         .createQueryBuilder('subscription')
-        .select('DATE_TRUNC(\'month\', subscription.canceledAt)', 'month')
-        .addSelect('COUNT(*)', 'count')
+        .select("DATE_TRUNC('month', subscription.canceledAt) AS month")
+        .addSelect('COUNT(*) AS count')
         .where('subscription.canceledAt >= :startDate', { startDate })
-        .andWhere('subscription.status = :status', {
-          status: SubscriptionStatus.CANCELED,
-        })
+        .andWhere('subscription.canceledAt IS NOT NULL') // Make sure this column is not null
         .groupBy('month')
         .orderBy('month', 'ASC')
-        .getRawMany<{ month: string; count: string }>();
+        .getRawMany<MonthCountResult>();
 
-      // Combine data and calculate metrics
-      const monthlyData = new Map
+      // Initialize monthlyData map
+      const monthlyData = new Map<
         string,
         {
           newSubscriptions: number;
@@ -344,57 +383,82 @@ export class PaymentAnalyticsService {
 
       // Initialize with new subscriptions
       for (const item of newSubscriptions) {
-        monthlyData.set(item.month, {
-          newSubscriptions: parseInt(item.count, 10),
-          canceledSubscriptions: 0,
-          netGrowth: parseInt(item.count, 10),
-          totalActive: 0, // Will calculate later
-        });
+        // Check if month exists before using it
+        if (item.month) {
+          monthlyData.set(item.month, {
+            newSubscriptions: parseInt(item.count || '0', 10),
+            canceledSubscriptions: 0,
+            netGrowth: parseInt(item.count || '0', 10),
+            totalActive: 0, // Will calculate later
+          });
+        }
       }
 
       // Add canceled subscriptions
       for (const item of canceledSubscriptions) {
-        if (monthlyData.has(item.month)) {
-          const current = monthlyData.get(item.month)!;
-          const canceled = parseInt(item.count, 10);
-          monthlyData.set(item.month, {
-            ...current,
-            canceledSubscriptions: canceled,
-            netGrowth: current.newSubscriptions - canceled,
-          });
-        } else {
-          monthlyData.set(item.month, {
-            newSubscriptions: 0,
-            canceledSubscriptions: parseInt(item.count, 10),
-            netGrowth: -parseInt(item.count, 10),
-            totalActive: 0,
-          });
+        // Check if month exists before using it
+        if (item.month) {
+          if (monthlyData.has(item.month)) {
+            const current = monthlyData.get(item.month);
+            // Add null check
+            if (current) {
+              const canceled = parseInt(item.count || '0', 10);
+              monthlyData.set(item.month, {
+                ...current,
+                canceledSubscriptions: canceled,
+                netGrowth: current.newSubscriptions - canceled,
+              });
+            }
+          } else {
+            monthlyData.set(item.month, {
+              newSubscriptions: 0,
+              canceledSubscriptions: parseInt(item.count || '0', 10),
+              netGrowth: -parseInt(item.count || '0', 10),
+              totalActive: 0,
+            });
+          }
         }
       }
 
       // Calculate cumulative active subscriptions
       let runningTotal = 0;
       const sortedMonths = [...monthlyData.keys()].sort();
-      
+
       for (const month of sortedMonths) {
-        const data = monthlyData.get(month)!;
-        runningTotal += data.netGrowth;
-        monthlyData.set(month, {
-          ...data,
-          totalActive: Math.max(0, runningTotal), // Ensure non-negative
-        });
+        const data = monthlyData.get(month);
+        // Add null check
+        if (data) {
+          runningTotal += data.netGrowth;
+          monthlyData.set(month, {
+            ...data,
+            totalActive: Math.max(0, runningTotal), // Ensure non-negative
+          });
+        }
       }
 
-      // Convert map to sorted array
-      return sortedMonths.map((month) => ({
-        month,
-        ...monthlyData.get(month)!,
-      }));
-    } catch (error) {
+      // Return the data with type safety
+      return {
+        newSubscriptions: newSubscriptions.map((item) => ({
+          month: item.month ?? '',
+          count: item.count ?? '0',
+        })),
+        canceledSubscriptions: canceledSubscriptions.map((item) => ({
+          month: item.month ?? '',
+          count: item.count ?? '0',
+        })),
+        netGrowth: runningTotal,
+        totalActive: runningTotal,
+      };
+    } catch (error: unknown) {
       this.logger.error(
         `Failed to get subscription growth metrics: ${error instanceof Error ? error.message : 'Unknown error'}`,
       );
-      return [];
+      return {
+        newSubscriptions: [],
+        canceledSubscriptions: [],
+        netGrowth: 0,
+        totalActive: 0,
+      };
     }
   }
 }

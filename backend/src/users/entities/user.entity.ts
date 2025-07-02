@@ -1,49 +1,55 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import {
   Entity,
   Column,
-  OneToMany,
   Index,
+  BaseEntity,
+  PrimaryGeneratedColumn,
+  CreateDateColumn,
+  UpdateDateColumn,
   BeforeInsert,
-  BeforeUpdate,
-  AfterLoad
+  OneToMany,
 } from 'typeorm';
-import { Exclude, Expose } from 'class-transformer';
-import { IsEmail, IsPhoneNumber } from 'class-validator';
-import { BaseEntity } from '../../common/base.entity';
-import { Order } from '../../orders/entities/order.entity';
-import { File } from '../../upload/entities/file.entity';
-import { Subscription } from '../../payments/entities/subscription.entity';
-
-export enum UserRole {
-  ADMIN = 'admin',
-  TAILOR = 'tailor',
-  CLIENT = 'client',
-}
+import { IsEmail } from 'class-validator';
+import { Exclude, Expose, Transform } from 'class-transformer';
+import { UserRole } from '../enums/user-role.enum';
+import { Subscription } from '../entities/subscription.entity';
+import { UserPreferencesDto } from '../dto/user-preferences.dto';
+import { RefreshToken } from '../../auth/entities/refresh-token.entity';
 
 export interface UserPreferences {
-  theme?: 'light' | 'dark';
+  theme?: 'light' | 'dark' | 'system';
+  language?: string;
+  timeZone?: string;
+  currency?: string;
   notifications?: {
     email?: boolean;
     sms?: boolean;
     push?: boolean;
+    marketing?: boolean;
+    orderUpdates?: boolean;
   };
-  language?: string;
-  timeZone?: string;
-  currency?: string;
+  features?: Record<string, boolean>;
 }
 
 @Entity('users')
 @Index(['email'], { unique: true })
-@Index(['googleId'], { unique: true, where: "google_id IS NOT NULL" })
-@Index(['stripeCustomerId'], { unique: true, where: "stripe_customer_id IS NOT NULL" })
+@Index(['googleId'], { unique: true, where: 'google_id IS NOT NULL' })
+@Index(['stripeCustomerId'], {
+  unique: true,
+  where: 'stripe_customer_id IS NOT NULL',
+})
 export class User extends BaseEntity {
-  @Column()
-  @IsEmail()
-  @Index({ unique: true })
-  email = '';
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
 
-  @Column({ nullable: true })
-  @Exclude()
+  @Column({ unique: true })
+  @IsEmail()
+  @Transform(({ value }) => value.toLowerCase())
+  email: string;
+
+  @Column({ nullable: true }) // Only nullable for OAuth users
+  @Exclude({ toPlainOnly: true })
   password?: string;
 
   @Column({ nullable: true, name: 'google_id' })
@@ -57,110 +63,66 @@ export class User extends BaseEntity {
   role: UserRole = UserRole.CLIENT;
 
   @Column({ nullable: true })
+  locale?: string;
+
+  @Column({ type: 'jsonb', default: {} })
+  preferences: UserPreferencesDto;
+
+  @Column({ nullable: true, name: 'stripe_customer_id' })
+  stripeCustomerId?: string;
+
+  @Column({ nullable: true })
+  stripeConnectAccountId?: string;
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+
+  @Column({ nullable: true })
   firstName?: string;
 
   @Column({ nullable: true })
   lastName?: string;
 
-  @Column({ nullable: true })
-  @IsPhoneNumber()
-  phoneNumber?: string;
-
-  @Column({ nullable: true, type: 'text' })
-  address?: string;
+  @Column({ default: true })
+  isActive: boolean;
 
   @Column({ default: false })
-  emailVerified = false;
+  emailVerified: boolean;
 
   @Column({ nullable: true })
-  @Exclude()
+  oauthProvider?: string;
+
+  @Column({ nullable: true })
+  oauthProviderId?: string;
+
+  @Column({ nullable: true })
+  @Exclude({ toPlainOnly: true })
   emailVerificationToken?: string;
 
   @Column({ nullable: true })
-  @Exclude()
+  @Exclude({ toPlainOnly: true })
   passwordResetToken?: string;
 
-  @Column({ type: 'timestamptz', nullable: true })
-  @Exclude()
+  @Column({ nullable: true, type: 'timestamp' })
   passwordResetExpires?: Date;
 
-  @OneToMany(() => Order, (order: Order) => order.client)
-  clientOrders!: Order[];
+  @Column({ nullable: true })
+  phoneNumber?: string;
 
-  @OneToMany(() => Order, (order: Order) => order.tailor)
-  tailorOrders!: Order[];
+  @Column({ nullable: true })
+  profilePicture?: string;
 
-  @OneToMany(() => File, (file: File) => file.uploader)
-  uploads!: File[];
-
-  @OneToMany(() => Subscription, (subscription: Subscription) => subscription.user)
-  subscriptions!: Subscription[];
-  
-  @Column({ nullable: true, name: 'stripe_customer_id' })
-  @Exclude()
-  stripeCustomerId?: string;
-
-  @Column({ nullable: true, name: 'stripe_connect_account_id' })
-  @Exclude()
-  stripeConnectAccountId?: string;
-
-  @Column({ default: true })
-  isActive = true;
-
-  @Column({ type: 'jsonb', nullable: true })
-  preferences: UserPreferences = {};
-
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ nullable: true, type: 'timestamp' })
   lastLoginAt?: Date;
 
-  // Virtual properties
-  private tempFullName?: string;
+  @OneToMany(() => Subscription, (subscription) => subscription.user)
+  subscriptions: Subscription[];
 
-  constructor(partial: Partial<User>) {
-    super();
-    Object.assign(this, partial);
-  }
-
-  @BeforeInsert()
-  @BeforeUpdate()
-  normalizeEmail() {
-    if (this.email) {
-      this.email = this.email.toLowerCase().trim();
-    }
-  }
-
-  @AfterLoad()
-  computeFullName() {
-    this.tempFullName = this.getFullName();
-  }
-
-  @Expose()
-  get fullName(): string {
-    return this.tempFullName || this.getFullName();
-  }
-
-  getFullName(): string {
-    if (this.firstName && this.lastName) {
-      return `${this.firstName} ${this.lastName}`.trim();
-    }
-    if (this.firstName) {
-      return this.firstName;
-    }
-    if (this.lastName) {
-      return this.lastName;
-    }
-    return this.email;
-  }
-
-  @Expose()
-  get isSubscribed(): boolean {
-    if (!this.subscriptions?.length) {
-      return false;
-    }
-    return this.subscriptions.some(sub => 
-      sub.status === 'active' && (!sub.expiresAt || sub.expiresAt > new Date())
-    );
-  }
+  @OneToMany(() => RefreshToken, (refreshToken) => refreshToken.user)
+  refreshTokens: RefreshToken[];
 
   @Expose()
   get displayRole(): string {
@@ -171,16 +133,17 @@ export class User extends BaseEntity {
     return !!(
       this.firstName &&
       this.lastName &&
-      this.phoneNumber &&
-      this.address &&
+      this.email &&
       this.emailVerified
     );
   }
 
   canAccessTailorFeatures(): boolean {
-    return this.role === UserRole.TAILOR && 
-           this.emailVerified && 
-           !!this.stripeConnectAccountId;
+    return (
+      this.role === UserRole.TAILOR &&
+      this.emailVerified &&
+      !!this.stripeConnectAccountId
+    );
   }
 
   hasStripeSetup(): boolean {
@@ -191,19 +154,30 @@ export class User extends BaseEntity {
     if (!this.passwordResetToken || !this.passwordResetExpires) {
       return false;
     }
-    return new Date() < this.passwordResetExpires;
+    return this.passwordResetExpires > new Date();
+  }
+
+  @BeforeInsert()
+  emailToLowerCase() {
+    this.email = this.email.toLowerCase();
+  }
+
+  @Expose()
+  get fullName(): string {
+    return this.firstName && this.lastName
+      ? `${this.firstName} ${this.lastName}`
+      : this.firstName || this.lastName || '';
   }
 
   toJSON() {
-    const { 
-      password,
+    const {
+      password: _password,
       emailVerificationToken,
       passwordResetToken,
       passwordResetExpires,
-      stripeCustomerId,
-      stripeConnectAccountId,
-      ...safeUser 
+      ...rest
     } = this;
-    return safeUser;
+    return rest;
   }
 }
+export { UserRole };

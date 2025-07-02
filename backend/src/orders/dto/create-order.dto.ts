@@ -5,7 +5,6 @@ import {
   IsOptional,
   IsArray,
   ValidateNested,
-  IsEnum,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -32,16 +31,21 @@ class FabricDetailsDto {
 class ServiceDto {
   @ApiProperty()
   @IsString()
-  type: string;
+  name: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  description?: string;
 
   @ApiProperty()
   @IsNumber()
   price: number;
 
   @ApiPropertyOptional()
-  @IsString()
+  @IsNumber()
   @IsOptional()
-  description?: string;
+  quantity?: number;
 }
 
 export class CreateOrderDto {
@@ -66,7 +70,8 @@ export class CreateOrderDto {
 
   @ApiProperty()
   @IsNumber()
-  price: number;
+  @IsOptional() // Make it optional since we'll calculate it server-side
+  estimatedPrice?: number; // Rename from price to estimatedPrice for clarity
 
   @ApiPropertyOptional()
   @IsString()

@@ -1,16 +1,22 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import Stripe from 'stripe';
 import { ConfigService } from '@nestjs/config';
-import {
-  Subscription,
-  SubscriptionStatus
-} from './entities/subscription.entity';
+import { Subscription } from './entities/subscription.entity';
 import { User } from '../users/entities/user.entity';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { EmailService } from '../email/email.service';
 import { UsersService } from '../users/users.service';
+import { handleStripeError } from './utils/stripe-error.utils';
+import { StripeService } from './services/stripe.service';
+import { SubscriptionStatus } from './enums/subscription-status.enum';
 
 interface SubscriptionCancellationOptions {
   cancelImmediately?: boolean;
@@ -24,7 +30,10 @@ interface PaymentSuccessData {
   date: Date;
 }
 
-interface PaymentFailureData extends PaymentSuccessData {
+interface PaymentFailureData {
+  amount: number;
+  invoiceId: string;
+  date: Date;
   reason: string;
 }
 
@@ -39,16 +48,108 @@ export class SubscriptionService {
     private readonly configService: ConfigService,
     private readonly emailService: EmailService,
     private readonly usersService: UsersService,
+    private readonly stripeService: StripeService,
   ) {
     const stripeKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     if (!stripeKey) {
-      throw new Error('STRIPE_SECRET_KEY is not configured');
+      throw new InternalServerErrorException(
+        'STRIPE_SECRET_KEY is not configured',
+      );
     }
-    
-    this.stripe = new Stripe(stripeKey, {
-      apiVersion: '2024-12-18.acacia',
-      typescript: true,
+
+    this.stripe = new Stripe(stripeKey);
+  }
+
+  /**
+   * Cancel a subscription
+   * @param subscriptionId Subscription ID to cancel
+   * @param options Cancellation options
+   * @returns Updated subscription
+   */
+  async cancelSubscription(
+    subscriptionId: string,
+    options: SubscriptionCancellationOptions = {},
+  ): Promise<any> {
+    // Use nullish coalescing with explicit type annotation
+    const cancelImmediately = options.cancelImmediately ?? false;
+    const reason: string = options.reason ?? 'Canceled by user';
+    const sendEmail = options.sendEmail ?? true;
+
+    if (!subscriptionId) {
+      throw new BadRequestException('Subscription ID is required');
+    }
+
+    // Only pass the parameters that stripeService.cancelSubscription accepts
+    if (!subscriptionId) {
+      throw new BadRequestException('Valid Subscription ID is required');
+    }
+
+    const result = await this.stripeService.cancelSubscription(
+      subscriptionId,
+      cancelImmediately,
+    );
+
+    // Store the reason in our database
+    await this.updateSubscriptionInDatabase(subscriptionId, {
+      status: 'canceled',
+      cancelReason: reason,
+      canceledAt: new Date(),
     });
+
+    if (sendEmail) {
+      await this.sendCancellationEmail(subscriptionId, reason);
+    }
+
+    return result;
+  }
+
+  private async updateSubscriptionInDatabase(
+    subscriptionId: string,
+    updates: any,
+  ): Promise<void> {
+    // Now we're actually using the subscriptionId parameter
+    await this.subscriptionRepository.update(
+      { id: subscriptionId }, // Use subscriptionId in the where condition
+      updates,
+    );
+  }
+
+  private async sendCancellationEmail(
+    subscriptionId: string,
+    reason: string,
+  ): Promise<void> {
+    // Find the subscription and related user
+    const subscription = await this.subscriptionRepository.findOne({
+      where: { id: subscriptionId },
+      relations: ['user'],
+    });
+
+    if (!subscription || !subscription.user) {
+      this.logger.warn(
+        `Could not find subscription ${subscriptionId} or related user for cancellation email`,
+      );
+      return;
+    }
+
+    // Use the sendEmail method instead of sendTemplate
+    await this.emailService.sendEmail({
+      to: subscription.user.email,
+      subject: 'Your subscription has been canceled',
+      html: this.generateCancellationEmailHtml(subscription.user, {
+        subscriptionId: subscriptionId,
+        endDate: new Date(),
+        reason: reason,
+      }),
+      text: this.generateCancellationEmailText(subscription.user, {
+        subscriptionId: subscriptionId,
+        endDate: new Date(),
+        reason: reason,
+      }),
+    });
+
+    this.logger.log(
+      `Sent cancellation email for subscription ${subscriptionId}`,
+    );
   }
 
   /**
@@ -62,170 +163,90 @@ export class SubscriptionService {
     createSubscriptionDto: CreateSubscriptionDto,
   ): Promise<Subscription> {
     try {
-      // Ensure user has a Stripe customer ID
       const stripeCustomerId = await this.getOrCreateCustomer(user);
 
-      // Create subscription configuration
-      const subscriptionData: Stripe.SubscriptionCreateParams = {
+      const stripeSubscription = await this.stripe.subscriptions.create({
         customer: stripeCustomerId,
         items: [{ price: createSubscriptionDto.priceId }],
-        payment_behavior: 'default_incomplete',
+        ...(createSubscriptionDto.trialDays
+          ? { trial_period_days: createSubscriptionDto.trialDays }
+          : {}),
+        ...(createSubscriptionDto.couponCode
+          ? { coupon: createSubscriptionDto.couponCode }
+          : {}),
+        metadata: {
+          userId: user.id,
+        },
         expand: ['latest_invoice.payment_intent'],
-      };
+      });
 
-      // Add trial if specified
-      if (createSubscriptionDto.trialDays && createSubscriptionDto.trialDays > 0) {
-        subscriptionData.trial_period_days = createSubscriptionDto.trialDays;
+      const invoice = stripeSubscription.latest_invoice;
+      if (invoice && typeof invoice !== 'string') {
+        const paymentIntent = invoice.payment_intent;
+        if (paymentIntent && typeof paymentIntent !== 'string') {
+          const error = paymentIntent.last_payment_error;
+          if (error) {
+            // Handle payment error
+          }
+        }
       }
 
-      // Add coupon if specified
-      if (createSubscriptionDto.couponCode) {
-        subscriptionData.coupon = createSubscriptionDto.couponCode;
-      }
+      const priceInfo = stripeSubscription.items.data[0].price;
 
-      // Create subscription in Stripe
-      const stripeSubscription = await this.stripe.subscriptions.create(subscriptionData);
-
-      // Get price information
-      let priceInfo = null;
-      try {
-        priceInfo = await this.stripe.prices.retrieve(createSubscriptionDto.priceId, {
-          expand: ['product'],
-        });
-      } catch (error) {
-        this.logger.warn(`Could not retrieve price information: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      }
-
-      // Create subscription record in database
       const subscription = this.subscriptionRepository.create({
         stripeSubscriptionId: stripeSubscription.id,
         stripePriceId: createSubscriptionDto.priceId,
         stripeCustomerId,
-        status: stripeSubscription.status as SubscriptionStatus,
-        currentPeriodStart: new Date(stripeSubscription.current_period_start * 1000),
-        currentPeriodEnd: new Date(stripeSubscription.current_period_end * 1000),
+        status: this.mapStripeStatusToEnum(stripeSubscription.status),
+        currentPeriodStart: new Date(
+          stripeSubscription.current_period_start * 1000,
+        ),
+        currentPeriodEnd: new Date(
+          stripeSubscription.current_period_end * 1000,
+        ),
         user,
         metadata: {
           hasTrial: !!createSubscriptionDto.trialDays,
           couponApplied: !!createSubscriptionDto.couponCode,
-          priceData: priceInfo ? {
-            currency: priceInfo.currency,
-            unitAmount: priceInfo.unit_amount,
-            recurring: priceInfo.recurring,
-            productName: priceInfo.product && typeof priceInfo.product !== 'string' 
-              ? priceInfo.product.name 
-              : undefined,
-          } : null,
-          invoiceId: stripeSubscription.latest_invoice && typeof stripeSubscription.latest_invoice !== 'string'
-            ? stripeSubscription.latest_invoice.id
+          priceData: priceInfo
+            ? {
+                currency: priceInfo.currency,
+                unitAmount: priceInfo.unit_amount,
+                recurring: priceInfo.recurring,
+                productName:
+                  priceInfo.product &&
+                  typeof priceInfo.product !== 'string' &&
+                  !('deleted' in priceInfo.product)
+                    ? priceInfo.product.name
+                    : undefined,
+              }
             : null,
+          invoiceId:
+            stripeSubscription.latest_invoice &&
+            typeof stripeSubscription.latest_invoice !== 'string'
+              ? stripeSubscription.latest_invoice.id
+              : null,
         },
       });
 
-      await this.subscriptionRepository.save(subscription);
+      const savedSubscription =
+        await this.subscriptionRepository.save(subscription);
 
-      // Send confirmation email
       await this.sendSubscriptionConfirmationEmail(user, {
-        subscriptionId: subscription.id,
+        subscriptionId: savedSubscription.id,
         trialDays: createSubscriptionDto.trialDays,
-        endDate: subscription.currentPeriodEnd,
-        productName: priceInfo && typeof priceInfo.product !== 'string' 
-          ? priceInfo.product.name 
-          : 'subscription',
+        endDate: savedSubscription.currentPeriodEnd,
+        productName:
+          priceInfo.product &&
+          typeof priceInfo.product !== 'string' &&
+          !('deleted' in priceInfo.product)
+            ? priceInfo.product.name
+            : 'subscription',
       });
 
-      return subscription;
+      return savedSubscription;
     } catch (error) {
-      this.logger.error(
-        `Failed to create subscription: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
-      );
-      
-      if (error instanceof Stripe.errors.StripeError) {
-        throw new BadRequestException(`Payment processing error: ${error.message}`);
-      }
-      
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      
-      throw new InternalServerErrorException('Failed to process subscription');
-    }
-  }
-
-  /**
-   * Cancel a subscription
-   * @param user User cancelling the subscription
-   * @param subscriptionId Subscription ID to cancel
-   * @param options Cancellation options
-   * @returns Updated subscription
-   */
-  async cancelSubscription(
-    user: User,
-    subscriptionId: string,
-    options: SubscriptionCancellationOptions = {}
-  ): Promise<Subscription> {
-    const subscription = await this.subscriptionRepository.findOne({
-      where: { id: subscriptionId, user: { id: user.id } },
-    });
-
-    if (!subscription) {
-      throw new NotFoundException('Subscription not found');
-    }
-
-    try {
-      const cancelImmediately = options.cancelImmediately ?? false;
-      
-      // Update subscription in Stripe
-      const stripeSubscription = await this.stripe.subscriptions.update(
-        subscription.stripeSubscriptionId,
-        {
-          cancel_at_period_end: !cancelImmediately,
-          ...(cancelImmediately ? { cancel_immediately: true } : {}),
-          metadata: {
-            cancelReason: options.reason || 'user_requested',
-            cancelledAt: new Date().toISOString(),
-          },
-        },
-      );
-
-      // Update subscription in database
-      subscription.cancelAtPeriodEnd = !cancelImmediately;
-      subscription.canceledAt = new Date();
-      
-      if (cancelImmediately) {
-        subscription.status = SubscriptionStatus.CANCELED;
-      }
-
-      subscription.metadata = {
-        ...subscription.metadata,
-        cancelReason: options.reason || 'user_requested',
-        cancelledAt: new Date().toISOString(),
-      };
-
-      await this.subscriptionRepository.save(subscription);
-
-      // Send cancellation email if requested
-      if (options.sendEmail !== false) {
-        await this.sendSubscriptionCancellationEmail(user, {
-          subscriptionId: subscription.id,
-          endDate: cancelImmediately ? new Date() : subscription.currentPeriodEnd,
-          reason: options.reason,
-        });
-      }
-
-      return subscription;
-    } catch (error) {
-      this.logger.error(
-        `Failed to cancel subscription: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
-      );
-      
-      if (error instanceof Stripe.errors.StripeError) {
-        throw new BadRequestException(`Payment processing error: ${error.message}`);
-      }
-      
-      throw error;
+      handleStripeError(error, 'SubscriptionService.createSubscription');
     }
   }
 
@@ -249,22 +270,24 @@ export class SubscriptionService {
       throw new NotFoundException('Subscription not found');
     }
 
+    // Check that stripeSubscriptionId exists
+    if (!subscription.stripeSubscriptionId) {
+      throw new BadRequestException('Subscription has no Stripe ID');
+    }
+
     try {
-      // Attach payment method to customer
       await this.stripe.paymentMethods.attach(paymentMethodId, {
         customer: subscription.stripeCustomerId,
       });
 
-      // Set as default payment method
       await this.stripe.customers.update(subscription.stripeCustomerId, {
         invoice_settings: {
           default_payment_method: paymentMethodId,
         },
       });
 
-      // Update subscription payment method
       await this.stripe.subscriptions.update(
-        subscription.stripeSubscriptionId,
+        subscription.stripeSubscriptionId, // Now TypeScript knows this is not undefined
         {
           default_payment_method: paymentMethodId,
         },
@@ -277,16 +300,10 @@ export class SubscriptionService {
 
       return this.subscriptionRepository.save(subscription);
     } catch (error) {
-      this.logger.error(
-        `Failed to update payment method: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
-      );
-      
-      if (error instanceof Stripe.errors.StripeError) {
-        throw new BadRequestException(`Payment processing error: ${error.message}`);
-      }
-      
-      throw error;
+      // Your error handling code
+      handleStripeError(error, 'SubscriptionService.updatePaymentMethod');
+      // This line is unreachable because handleStripeError throws, but added for type safety
+      throw new InternalServerErrorException('Failed to update payment method');
     }
   }
 
@@ -297,7 +314,7 @@ export class SubscriptionService {
    */
   async getUserActiveSubscriptions(userId: string): Promise<Subscription[]> {
     return this.subscriptionRepository.find({
-      where: { 
+      where: {
         user: { id: userId },
         status: SubscriptionStatus.ACTIVE,
       },
@@ -339,33 +356,44 @@ export class SubscriptionService {
       relations: ['user'],
     };
 
-    const subscription = await this.subscriptionRepository.findOne(queryOptions);
+    const subscription =
+      await this.subscriptionRepository.findOne(queryOptions);
 
     if (!subscription) {
       throw new NotFoundException('Subscription not found');
     }
 
+    // Check for Stripe subscription ID
+    if (!subscription.stripeSubscriptionId) {
+      this.logger.warn(`Subscription ${subscriptionId} has no Stripe ID`);
+      return subscription; // Return the basic subscription without Stripe data
+    }
+
     try {
-      // Get latest data from Stripe
       const stripeSubscription = await this.stripe.subscriptions.retrieve(
-        subscription.stripeSubscriptionId,
+        subscription.stripeSubscriptionId, // Now TypeScript knows this is not undefined
         {
           expand: ['latest_invoice', 'default_payment_method'],
         },
       );
 
-      // Sync status if different
-      if (subscription.status !== stripeSubscription.status) {
-        subscription.status = stripeSubscription.status as SubscriptionStatus;
+      if (
+        subscription.status !==
+        this.mapStripeStatusToEnum(stripeSubscription.status)
+      ) {
+        subscription.status = this.mapStripeStatusToEnum(
+          stripeSubscription.status,
+        );
         await this.subscriptionRepository.save(subscription);
       }
 
       return subscription;
     } catch (error) {
       this.logger.warn(
-        `Could not retrieve latest Stripe data: ${error instanceof Error ? error.message : 'Unknown error'}`
+        `Could not retrieve latest Stripe data: ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
       );
-      // Return the database record even if Stripe retrieval fails
       return subscription;
     }
   }
@@ -378,27 +406,38 @@ export class SubscriptionService {
     try {
       switch (event.type) {
         case 'customer.subscription.created':
-          await this.handleSubscriptionCreated(event.data.object as Stripe.Subscription);
+          await this.handleSubscriptionCreated(
+            event.data.object as Stripe.Subscription,
+          );
           break;
         case 'customer.subscription.updated':
-          await this.handleSubscriptionUpdated(event.data.object as Stripe.Subscription);
+          await this.handleSubscriptionUpdated(
+            event.data.object as Stripe.Subscription,
+          );
           break;
         case 'customer.subscription.deleted':
-          await this.handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
+          await this.handleSubscriptionDeleted(
+            event.data.object as Stripe.Subscription,
+          );
           break;
         case 'invoice.payment_succeeded':
-          await this.handleInvoicePaymentSucceeded(event.data.object as Stripe.Invoice);
+          await this.handleInvoicePaymentSucceeded(
+            event.data.object as Stripe.Invoice,
+          );
           break;
         case 'invoice.payment_failed':
-          await this.handleInvoicePaymentFailed(event.data.object as Stripe.Invoice);
+          await this.handleInvoicePaymentFailed(
+            event.data.object as Stripe.Invoice,
+          );
           break;
       }
     } catch (error) {
       this.logger.error(
-        `Failed to handle subscription webhook: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        `Failed to handle subscription webhook: ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
+        error instanceof Error ? error.stack : undefined,
       );
-      // Don't throw error so webhook request succeeds
     }
   }
 
@@ -421,7 +460,6 @@ export class SubscriptionService {
         },
       });
 
-      // Update user with new customer ID
       await this.usersService.update(user.id, {
         stripeCustomerId: customer.id,
       });
@@ -429,7 +467,9 @@ export class SubscriptionService {
       return customer.id;
     } catch (error) {
       this.logger.error(
-        `Failed to create Stripe customer: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to create Stripe customer: ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
       );
       throw new BadRequestException('Failed to create payment account');
     }
@@ -447,50 +487,23 @@ export class SubscriptionService {
       trialDays?: number;
       endDate: Date;
       productName: string;
-    }
+    },
   ): Promise<void> {
     try {
       await this.emailService.sendEmail({
         to: user.email,
-        subject: data.trialDays 
-          ? `Your ${data.productName} Trial Has Started` 
+        subject: data.trialDays
+          ? `Your ${data.productName} Trial Has Started`
           : `Your ${data.productName} Subscription Confirmation`,
         html: this.generateSubscriptionConfirmationHtml(user, data),
         text: this.generateSubscriptionConfirmationText(user, data),
       });
     } catch (error) {
       this.logger.error(
-        `Failed to send subscription confirmation: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to send subscription confirmation: ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
       );
-      // Don't throw - this is a non-critical operation
-    }
-  }
-
-  /**
-   * Send subscription cancellation email
-   * @param user User to send email to
-   * @param data Cancellation details
-   */
-  private async sendSubscriptionCancellationEmail(
-    user: User,
-    data: {
-      subscriptionId: string;
-      endDate: Date;
-      reason?: string;
-    }
-  ): Promise<void> {
-    try {
-      await this.emailService.sendEmail({
-        to: user.email,
-        subject: 'Your Subscription Has Been Cancelled',
-        html: this.generateCancellationEmailHtml(user, data),
-        text: this.generateCancellationEmailText(user, data),
-      });
-    } catch (error) {
-      this.logger.error(
-        `Failed to send cancellation email: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      );
-      // Don't throw - this is a non-critical operation
     }
   }
 
@@ -498,31 +511,33 @@ export class SubscriptionService {
    * Handle subscription created webhook
    * @param subscription Stripe subscription object
    */
-  private async handleSubscriptionCreated(subscription: Stripe.Subscription): Promise<void> {
+  private async handleSubscriptionCreated(
+    subscription: Stripe.Subscription,
+  ): Promise<void> {
     try {
-      // Check if subscription exists in our database
       const existingSubscription = await this.subscriptionRepository.findOne({
         where: { stripeSubscriptionId: subscription.id },
       });
 
       if (existingSubscription) {
-        // Already processed during creation
         return;
       }
 
-      // Find user by customer ID
-      const user = await this.usersService.findByStripeCustomerId(subscription.customer as string);
+      const user = await this.usersService.findByStripeCustomerId(
+        subscription.customer as string,
+      );
       if (!user) {
-        this.logger.warn(`No user found for customer: ${subscription.customer}`);
+        this.logger.warn(
+          `No user found for customer: ${subscription.customer}`,
+        );
         return;
       }
 
-      // Create subscription record
       const newSubscription = this.subscriptionRepository.create({
         stripeSubscriptionId: subscription.id,
         stripePriceId: subscription.items.data[0]?.price.id || '',
         stripeCustomerId: subscription.customer as string,
-        status: subscription.status as SubscriptionStatus,
+        status: this.mapStripeStatusToEnum(subscription.status),
         currentPeriodStart: new Date(subscription.current_period_start * 1000),
         currentPeriodEnd: new Date(subscription.current_period_end * 1000),
         user,
@@ -535,7 +550,9 @@ export class SubscriptionService {
       await this.subscriptionRepository.save(newSubscription);
     } catch (error) {
       this.logger.error(
-        `Failed to handle subscription created: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to handle subscription created: ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
       );
     }
   }
@@ -544,7 +561,9 @@ export class SubscriptionService {
    * Handle subscription updated webhook
    * @param subscription Stripe subscription object
    */
-  private async handleSubscriptionUpdated(subscription: Stripe.Subscription): Promise<void> {
+  private async handleSubscriptionUpdated(
+    subscription: Stripe.Subscription,
+  ): Promise<void> {
     try {
       const existingSubscription = await this.subscriptionRepository.findOne({
         where: { stripeSubscriptionId: subscription.id },
@@ -556,17 +575,25 @@ export class SubscriptionService {
         return;
       }
 
-      // Update subscription data
-      existingSubscription.status = subscription.status as SubscriptionStatus;
-      existingSubscription.currentPeriodStart = new Date(subscription.current_period_start * 1000);
-      existingSubscription.currentPeriodEnd = new Date(subscription.current_period_end * 1000);
-      
+      existingSubscription.status = this.mapStripeStatusToEnum(
+        subscription.status,
+      );
+      existingSubscription.currentPeriodStart = new Date(
+        subscription.current_period_start * 1000,
+      );
+      existingSubscription.currentPeriodEnd = new Date(
+        subscription.current_period_end * 1000,
+      );
+
       if (subscription.canceled_at) {
-        existingSubscription.canceledAt = new Date(subscription.canceled_at * 1000);
+        existingSubscription.canceledAt = new Date(
+          subscription.canceled_at * 1000,
+        );
       }
-      
-      existingSubscription.cancelAtPeriodEnd = subscription.cancel_at_period_end;
-      
+
+      existingSubscription.cancelAtPeriodEnd =
+        subscription.cancel_at_period_end;
+
       existingSubscription.metadata = {
         ...existingSubscription.metadata,
         lastUpdated: new Date().toISOString(),
@@ -576,7 +603,9 @@ export class SubscriptionService {
       await this.subscriptionRepository.save(existingSubscription);
     } catch (error) {
       this.logger.error(
-        `Failed to handle subscription updated: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to handle subscription updated: ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
       );
     }
   }
@@ -585,7 +614,9 @@ export class SubscriptionService {
    * Handle subscription deleted webhook
    * @param subscription Stripe subscription object
    */
-  private async handleSubscriptionDeleted(subscription: Stripe.Subscription): Promise<void> {
+  private async handleSubscriptionDeleted(
+    subscription: Stripe.Subscription,
+  ): Promise<void> {
     try {
       const existingSubscription = await this.subscriptionRepository.findOne({
         where: { stripeSubscriptionId: subscription.id },
@@ -597,7 +628,6 @@ export class SubscriptionService {
         return;
       }
 
-      // Update subscription status
       existingSubscription.status = SubscriptionStatus.CANCELED;
       existingSubscription.canceledAt = new Date();
       existingSubscription.metadata = {
@@ -609,7 +639,9 @@ export class SubscriptionService {
       await this.subscriptionRepository.save(existingSubscription);
     } catch (error) {
       this.logger.error(
-        `Failed to handle subscription deleted: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to handle subscription deleted: ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
       );
     }
   }
@@ -618,14 +650,17 @@ export class SubscriptionService {
    * Handle invoice payment succeeded webhook
    * @param invoice Stripe invoice object
    */
-  private async handleInvoicePaymentSucceeded(invoice: Stripe.Invoice): Promise<void> {
+  private async handleInvoicePaymentSucceeded(
+    invoice: Stripe.Invoice,
+  ): Promise<void> {
     if (!invoice.subscription) {
-      return; // Not subscription-related
+      return;
     }
 
-    const subscriptionId = typeof invoice.subscription === 'string' 
-      ? invoice.subscription 
-      : invoice.subscription.id;
+    const subscriptionId =
+      typeof invoice.subscription === 'string'
+        ? invoice.subscription
+        : invoice.subscription.id;
 
     try {
       const subscription = await this.subscriptionRepository.findOne({
@@ -638,7 +673,6 @@ export class SubscriptionService {
         return;
       }
 
-      // Update subscription with new period end if available
       if (invoice.period_end) {
         subscription.currentPeriodEnd = new Date(invoice.period_end * 1000);
       }
@@ -652,7 +686,6 @@ export class SubscriptionService {
 
       await this.subscriptionRepository.save(subscription);
 
-      // Send payment confirmation if user available
       if (subscription.user && subscription.user.email) {
         await this.emailService.sendEmail({
           to: subscription.user.email,
@@ -671,7 +704,9 @@ export class SubscriptionService {
       }
     } catch (error) {
       this.logger.error(
-        `Failed to handle invoice payment succeeded: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to handle invoice payment succeeded: ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
       );
     }
   }
@@ -680,16 +715,24 @@ export class SubscriptionService {
    * Handle invoice payment failed webhook
    * @param invoice Stripe invoice object
    */
-  private async handleInvoicePaymentFailed(invoice: Stripe.Invoice): Promise<void> {
+  private async handleInvoicePaymentFailed(
+    invoice: Stripe.Invoice,
+  ): Promise<void> {
     if (!invoice.subscription) {
-      return; // Not subscription-related
+      return;
     }
 
-    const subscriptionId = typeof invoice.subscription === 'string' 
-      ? invoice.subscription 
-      : invoice.subscription.id;
+    const subscriptionId =
+      typeof invoice.subscription === 'string'
+        ? invoice.subscription
+        : invoice.subscription.id;
 
     try {
+      await this.retrieveInvoiceAndLogError(invoice.id);
+      const invoiceData = await this.stripe.invoices.retrieve(invoice.id, {
+        expand: ['payment_intent'],
+      });
+
       const subscription = await this.subscriptionRepository.findOne({
         where: { stripeSubscriptionId: subscriptionId },
         relations: ['user'],
@@ -700,17 +743,27 @@ export class SubscriptionService {
         return;
       }
 
-      // Update subscription metadata with payment failure
+      let paymentFailureReason = 'Your payment could not be processed';
+      if (
+        invoiceData.payment_intent &&
+        typeof invoiceData.payment_intent !== 'string' &&
+        invoiceData.payment_intent.last_payment_error &&
+        invoiceData.payment_intent.last_payment_error.message
+      ) {
+        paymentFailureReason =
+          invoiceData.payment_intent.last_payment_error.message ||
+          paymentFailureReason;
+      }
+
       subscription.metadata = {
         ...subscription.metadata,
         lastFailedInvoiceId: invoice.id,
         lastPaymentFailure: new Date().toISOString(),
-        paymentFailureReason: invoice.last_payment_error?.message || 'Unknown payment error',
+        paymentFailureReason,
       };
 
       await this.subscriptionRepository.save(subscription);
 
-      // Send payment failure notification if user available
       if (subscription.user && subscription.user.email) {
         await this.emailService.sendEmail({
           to: subscription.user.email,
@@ -719,19 +772,21 @@ export class SubscriptionService {
             amount: invoice.amount_due / 100,
             invoiceId: invoice.id,
             date: new Date(),
-            reason: invoice.last_payment_error?.message || 'Your payment could not be processed',
+            reason: paymentFailureReason,
           }),
           text: this.generatePaymentFailureText(subscription.user, {
             amount: invoice.amount_due / 100,
             invoiceId: invoice.id,
             date: new Date(),
-            reason: invoice.last_payment_error?.message || 'Your payment could not be processed',
+            reason: paymentFailureReason,
           }),
         });
       }
     } catch (error) {
       this.logger.error(
-        `Failed to handle invoice payment failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to handle invoice payment failed: ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
       );
     }
   }
@@ -749,34 +804,37 @@ export class SubscriptionService {
       trialDays?: number;
       endDate: Date;
       productName: string;
-    }
+    },
   ): string {
     const isTrial = !!data.trialDays;
-    const title = isTrial 
-      ? `Your ${data.productName} Trial Has Started` 
+    const title = isTrial
+      ? `Your ${data.productName} Trial Has Started`
       : `Your ${data.productName} Subscription`;
-    
+
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #4a4a4a;">${title}</h2>
         <p>Hello ${user.firstName || user.email},</p>
         
-        ${isTrial 
-          ? `<p>Your ${data.trialDays}-day free trial of ${data.productName} has started.</p>` 
-          : `<p>Thank you for subscribing to ${data.productName}!</p>`
+        ${
+          isTrial
+            ? `<p>Your ${data.trialDays}-day free trial of ${data.productName} has started.</p>`
+            : `<p>Thank you for subscribing to ${data.productName}!</p>`
         }
         
         <div style="background-color: #f8f8f8; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <p><strong>Subscription ID:</strong> ${data.subscriptionId}</p>
-          ${isTrial 
-            ? `<p><strong>Trial End Date:</strong> ${data.endDate.toLocaleDateString()}</p>` 
-            : `<p><strong>Next Billing Date:</strong> ${data.endDate.toLocaleDateString()}</p>`
+          ${
+            isTrial
+              ? `<p><strong>Trial End Date:</strong> ${data.endDate.toLocaleDateString()}</p>`
+              : `<p><strong>Next Billing Date:</strong> ${data.endDate.toLocaleDateString()}</p>`
           }
         </div>
         
-        ${isTrial 
-          ? `<p>After your trial ends, your payment method will be charged unless you cancel before the trial period ends.</p>` 
-          : `<p>You can manage your subscription from your account dashboard at any time.</p>`
+        ${
+          isTrial
+            ? `<p>After your trial ends, your payment method will be charged unless you cancel before the trial period ends.</p>`
+            : `<p>You can manage your subscription from your account dashboard at any time.</p>`
         }
         
         <p>If you have any questions or need assistance, please contact our support team.</p>
@@ -798,32 +856,35 @@ export class SubscriptionService {
       trialDays?: number;
       endDate: Date;
       productName: string;
-    }
+    },
   ): string {
     const isTrial = !!data.trialDays;
-    const title = isTrial 
-      ? `Your ${data.productName} Trial Has Started` 
+    const title = isTrial
+      ? `Your ${data.productName} Trial Has Started`
       : `Your ${data.productName} Subscription`;
-    
+
     return `
 ${title}
 
 Hello ${user.firstName || user.email},
 
-${isTrial 
-  ? `Your ${data.trialDays}-day free trial of ${data.productName} has started.` 
-  : `Thank you for subscribing to ${data.productName}!`
+${
+  isTrial
+    ? `Your ${data.trialDays}-day free trial of ${data.productName} has started.`
+    : `Thank you for subscribing to ${data.productName}!`
 }
 
 Subscription ID: ${data.subscriptionId}
-${isTrial 
-  ? `Trial End Date: ${data.endDate.toLocaleDateString()}` 
-  : `Next Billing Date: ${data.endDate.toLocaleDateString()}`
+${
+  isTrial
+    ? `Trial End Date: ${data.endDate.toLocaleDateString()}`
+    : `Next Billing Date: ${data.endDate.toLocaleDateString()}`
 }
 
-${isTrial 
-  ? `After your trial ends, your payment method will be charged unless you cancel before the trial period ends.` 
-  : `You can manage your subscription from your account dashboard at any time.`
+${
+  isTrial
+    ? `After your trial ends, your payment method will be charged unless you cancel before the trial period ends.`
+    : `You can manage your subscription from your account dashboard at any time.`
 }
 
 If you have any questions or need assistance, please contact our support team.
@@ -844,10 +905,10 @@ Thank you for choosing our service!
       subscriptionId: string;
       endDate: Date;
       reason?: string;
-    }
+    },
   ): string {
     const isImmediately = data.endDate <= new Date();
-    
+
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #4a4a4a;">Subscription Cancelled</h2>
@@ -857,16 +918,18 @@ Thank you for choosing our service!
         
         <div style="background-color: #f8f8f8; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <p><strong>Subscription ID:</strong> ${data.subscriptionId}</p>
-          ${isImmediately 
-            ? `<p><strong>Cancelled:</strong> Effective immediately</p>` 
-            : `<p><strong>Access Until:</strong> ${data.endDate.toLocaleDateString()}</p>`
+          ${
+            isImmediately
+              ? `<p><strong>Cancelled:</strong> Effective immediately</p>`
+              : `<p><strong>Access Until:</strong> ${data.endDate.toLocaleDateString()}</p>`
           }
           ${data.reason ? `<p><strong>Reason:</strong> ${data.reason}</p>` : ''}
         </div>
         
-        ${isImmediately 
-          ? `<p>Your access has been terminated and you will no longer be billed.</p>` 
-          : `<p>You will continue to have access until the end of your current billing period, after which you will no longer be charged.</p>`
+        ${
+          isImmediately
+            ? `<p>Your access has been terminated and you will no longer be billed.</p>`
+            : `<p>You will continue to have access until the end of your current billing period, after which you will no longer be charged.</p>`
         }
         
         <p>We're sorry to see you go. If you change your mind, you can resubscribe from your account dashboard at any time.</p>
@@ -887,10 +950,10 @@ Thank you for choosing our service!
       subscriptionId: string;
       endDate: Date;
       reason?: string;
-    }
+    },
   ): string {
     const isImmediately = data.endDate <= new Date();
-    
+
     return `
 Subscription Cancelled
 
@@ -899,15 +962,17 @@ Hello ${user.firstName || user.email},
 Your subscription has been cancelled as requested.
 
 Subscription ID: ${data.subscriptionId}
-${isImmediately 
-  ? `Cancelled: Effective immediately` 
-  : `Access Until: ${data.endDate.toLocaleDateString()}`
+${
+  isImmediately
+    ? `Cancelled: Effective immediately`
+    : `Access Until: ${data.endDate.toLocaleDateString()}`
 }
 ${data.reason ? `Reason: ${data.reason}` : ''}
 
-${isImmediately 
-  ? `Your access has been terminated and you will no longer be billed.` 
-  : `You will continue to have access until the end of your current billing period, after which you will no longer be charged.`
+${
+  isImmediately
+    ? `Your access has been terminated and you will no longer be billed.`
+    : `You will continue to have access until the end of your current billing period, after which you will no longer be charged.`
 }
 
 We're sorry to see you go. If you change your mind, you can resubscribe from your account dashboard at any time.
@@ -921,10 +986,10 @@ If you have any feedback about your experience, we'd love to hear from you.
    * @param user User receiving email
    * @param data Payment data
    * @returns HTML
-   * /
-    private generatePaymentSuccessHtml(
+   */
+  private generatePaymentSuccessHtml(
     user: User,
-    data: PaymentSuccessData
+    data: PaymentSuccessData,
   ): string {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -953,7 +1018,7 @@ If you have any feedback about your experience, we'd love to hear from you.
    */
   private generatePaymentSuccessText(
     user: User,
-    data: PaymentSuccessData
+    data: PaymentSuccessData,
   ): string {
     return `
 Payment Successful
@@ -980,7 +1045,7 @@ Thank you for your continued subscription.
    */
   private generatePaymentFailureHtml(
     user: User,
-    data: PaymentFailureData
+    data: PaymentFailureData,
   ): string {
     return `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -1010,7 +1075,7 @@ Thank you for your continued subscription.
    */
   private generatePaymentFailureText(
     user: User,
-    data: PaymentFailureData
+    data: PaymentFailureData,
   ): string {
     return `
 Payment Failed
@@ -1028,5 +1093,46 @@ Please update your payment information in your account dashboard to avoid any in
 
 If you need assistance, please contact our support team.
     `;
+  }
+
+  /**
+   * Retrieve invoice and log payment error if any
+   * @param invoiceId Invoice ID
+   * @returns The retrieved invoice
+   */
+  private async retrieveInvoiceAndLogError(
+    invoiceId: string,
+  ): Promise<Stripe.Invoice> {
+    const invoice = await this.stripe.invoices.retrieve(invoiceId, {
+      expand: ['payment_intent'],
+    });
+
+    if (invoice.payment_intent && typeof invoice.payment_intent !== 'string') {
+      const error = invoice.payment_intent.last_payment_error;
+      if (error) {
+        console.log(error.message);
+      }
+    }
+
+    return invoice;
+  }
+
+  /**
+   * Maps Stripe subscription status to internal SubscriptionStatus enum
+   * @param stripeStatus Status string from Stripe
+   * @returns Corresponding SubscriptionStatus enum value
+   */
+  private mapStripeStatusToEnum(stripeStatus: string): SubscriptionStatus {
+    const statusMap: Record<string, SubscriptionStatus> = {
+      active: SubscriptionStatus.ACTIVE,
+      canceled: SubscriptionStatus.CANCELED,
+      incomplete: SubscriptionStatus.INCOMPLETE,
+      incomplete_expired: SubscriptionStatus.INCOMPLETE_EXPIRED,
+      past_due: SubscriptionStatus.PAST_DUE,
+      trialing: SubscriptionStatus.TRIAL,
+      unpaid: SubscriptionStatus.UNPAID,
+    };
+
+    return statusMap[stripeStatus] || SubscriptionStatus.INCOMPLETE;
   }
 }

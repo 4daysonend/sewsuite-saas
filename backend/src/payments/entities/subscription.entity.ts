@@ -1,56 +1,67 @@
 // /backend/src/payments/entities/subscription.entity.ts
-import { Entity, Column, ManyToOne } from 'typeorm';
-import { BaseEntity } from '../../common/base.entity';
+import {
+  Entity,
+  Column,
+  PrimaryGeneratedColumn,
+  CreateDateColumn,
+  UpdateDateColumn,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 
-export enum SubscriptionStatus {
-  ACTIVE = 'active',
-  PAST_DUE = 'past_due',
-  CANCELED = 'canceled',
-  INCOMPLETE = 'incomplete',
-  INCOMPLETE_EXPIRED = 'incomplete_expired',
-  TRIALING = 'trialing',
-  UNPAID = 'unpaid',
-}
-
 @Entity('subscriptions')
-export class Subscription extends BaseEntity {
-  @Column()
-  stripeSubscriptionId = '';
+export class Subscription {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
 
-  @Column()
-  stripePriceId = '';
+  @Column({ unique: true })
+  stripeSubscriptionId: string;
 
-  @Column()
-  stripeCustomerId = '';
+  @Column({ nullable: true })
+  stripeCustomerId: string;
 
-  @Column({
-    type: 'enum',
-    enum: SubscriptionStatus,
-    default: SubscriptionStatus.INCOMPLETE,
-  })
-  status: SubscriptionStatus = SubscriptionStatus.INCOMPLETE;
+  @Column({ nullable: true })
+  stripePriceId: string;
 
-  @Column({ type: 'timestamptz' })
-  currentPeriodStart: Date = new Date();
+  @Column({ nullable: true })
+  userId: string;
 
-  @Column({ type: 'timestamptz' })
-  currentPeriodEnd: Date = new Date();
+  // Add this relationship
+  @ManyToOne(() => User, { eager: false })
+  @JoinColumn({ name: 'userId' })
+  user: User;
 
-  @Column({ type: 'timestamptz', nullable: true })
+  @Column({ default: 'active' })
+  status: string; // active, past_due, canceled, etc.
+
+  // Add these properties
+  @Column({ type: 'timestamp', nullable: true })
+  currentPeriodStart: Date;
+
+  @Column({ type: 'timestamp', nullable: true })
+  currentPeriodEnd: Date;
+
+  @Column({ nullable: true, type: 'timestamp' })
   canceledAt?: Date;
 
-  @Column({ default: false })
-  cancelAtPeriodEnd = false;
+  @Column({ nullable: true, default: false })
+  cancelAtPeriodEnd?: boolean;
 
-  @ManyToOne(() => User, { nullable: false })
-  user!: User;
+  // Add this new property
+  @Column({ nullable: true, type: 'text' })
+  cancelReason?: string;
 
-  @Column({ type: 'jsonb', nullable: true })
-  metadata: Record<string, any> = {};
+  @Column({ type: 'json', nullable: true })
+  metadata?: Record<string, any>;
 
-  constructor(partial: Partial<Subscription & { user: User }>) {
-    super();
-    Object.assign(this, partial);
-  }
+  // Add this field to store Stripe API data
+  @Column({ type: 'json', nullable: true })
+  stripeDetails?: Record<string, any>;
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
 }

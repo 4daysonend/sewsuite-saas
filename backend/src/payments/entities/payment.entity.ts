@@ -1,42 +1,93 @@
 // /backend/src/payments/entities/payment.entity.ts
-import { Entity, Column, ManyToOne } from 'typeorm';
-import { BaseEntity } from '../../common/base.entity';
-import { Order } from '../../orders/entities/order.entity';
-
-export enum PaymentStatus {
-  PENDING = 'pending',
-  PROCESSING = 'processing',
-  COMPLETED = 'completed',
-  FAILED = 'failed',
-  REFUNDED = 'refunded',
-}
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
+import { Order } from '../../orders/entities/order.entity'; // Adjust the path as needed
 
 @Entity('payments')
-export class Payment extends BaseEntity {
-  @Column()
-  stripePaymentIntentId = '';
+export class Payment {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
 
-  @Column('decimal', { precision: 10, scale: 2 })
-  amount = 0;
+  // Add this property to store Stripe details
+  @Column({ type: 'json', nullable: true })
+  stripeDetails?: any;
 
-  @Column()
-  currency = 'USD';
+  @Column({ nullable: true })
+  stripeCustomerId?: string;
 
-  @Column({
-    type: 'enum',
-    enum: PaymentStatus,
-    default: PaymentStatus.PENDING,
-  })
-  status: PaymentStatus = PaymentStatus.PENDING;
+  @Column({ nullable: true })
+  stripePaymentIntentId?: string;
 
+  @Column({ nullable: true })
+  stripeChargeId?: string;
+
+  @Column({ nullable: true })
+  stripeInvoiceId?: string;
+
+  @Column({ nullable: true })
+  stripeSubscriptionId?: string;
+
+  @Column({ nullable: true })
+  paymentMethodId?: string;
+
+  @Column({ nullable: true })
+  relatedPaymentId?: string;
+
+  @Column({ nullable: true, type: 'decimal', precision: 10, scale: 2 })
+  amount?: number;
+
+  @Column({ length: 3, default: 'USD' })
+  currency: string;
+
+  @Column({ length: 20 })
+  status: string; // succeeded, failed, refunded, partially_refunded, etc.
+
+  @Column({ nullable: true })
+  errorMessage?: string;
+
+  @Column({ nullable: true })
+  errorCode?: string;
+
+  @Column({ nullable: true, type: 'decimal', precision: 10, scale: 2 })
+  refundedAmount?: number;
+
+  @Column({ nullable: true })
+  userId?: string;
+
+  // Refund-related properties
+  @Column({ default: false })
+  refunded: boolean;
+
+  @Column({ nullable: true, type: 'timestamp' })
+  refundedAt?: Date;
+
+  @Column({ nullable: true })
+  refundReason?: string;
+
+  @Column({ nullable: true })
+  refundId?: string;
+
+  @Column({ nullable: true })
+  orderId?: string;
+
+  // Add this relation
   @ManyToOne(() => Order, (order) => order.payments)
-  order: Order;
+  @JoinColumn({ name: 'orderId' })
+  order?: Order;
 
-  @Column({ type: 'jsonb', nullable: true })
-  metadata: Record<string, any> = {};
+  @Column({ type: 'json', nullable: true })
+  metadata?: Record<string, any>;
 
-  constructor(partial: Partial<Payment>) {
-    super();
-    Object.assign(this, partial);
-  }
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
 }

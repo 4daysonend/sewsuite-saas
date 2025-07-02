@@ -1,16 +1,26 @@
-import { Injectable, Logger, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+  ConflictException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, FindOptionsWhere } from 'typeorm';
+import { Repository } from 'typeorm'; // Remove FindOptionsWhere if you're not using it explicitly
 import * as bcrypt from 'bcryptjs';
-import { User, UserRole } from './entities/user.entity';
-import { CreateUserDto } from './dto/create-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
-import { UpdatePasswordDto } from './dto/specific-updates/update-password.dto';
-import { UpdateEmailDto } from './dto/specific-updates/update-email.dto';
-import { UserPreferencesDto } from './dto/user-preferences.dto';
-import { QueryUsersDto } from './dto/query-users.dto';
+import * as crypto from 'crypto';
+import { User } from './entities/user.entity';
 import { StorageQuota } from '../upload/entities/storage-quota.entity';
-import { DEFAULT_PREFERENCES } from './dto/base-preferences.dto';
+import {
+  CreateUserDto,
+  UpdateUserDto,
+  UpdatePasswordDto,
+  UpdateEmailDto,
+  UserPreferencesDto,
+  QueryUsersDto,
+} from './dto';
+import { UserRole } from './enums/user-role.enum';
+import { DEFAULT_PREFERENCES } from './constants/user-defaults';
 
 @Injectable()
 export class UsersService {
@@ -29,19 +39,34 @@ export class UsersService {
    * @returns Created user
    */
   async create(createUserDto: CreateUserDto): Promise<User> {
+    // Check if email exists before proceeding
+    if (!createUserDto.email) {
+      throw new BadRequestException('Email is required');
+    }
+
     const existingUser = await this.findByEmail(createUserDto.email);
     if (existingUser) {
       throw new ConflictException('Email already exists');
     }
 
+    // Add password validation
+    if (!createUserDto.password) {
+      throw new BadRequestException('Password is required');
+    }
+
     const hashedPassword = await this.hashPassword(createUserDto.password);
-    
+
+    // Fix the create method to use proper types
     const user = this.usersRepository.create({
       ...createUserDto,
       password: hashedPassword,
-      preferences: createUserDto.preferences || DEFAULT_PREFERENCES
+      // Ensure preferences field exists and use DEFAULT_PREFERENCES as fallback
+      preferences: createUserDto.preferences || DEFAULT_PREFERENCES,
+      // If role is a string, convert it to UserRole enum
+      ...(createUserDto.role && { role: createUserDto.role as UserRole }),
     });
 
+    // Save the user and ensure it returns a single User, not an array
     const savedUser = await this.usersRepository.save(user);
 
     // Create default storage quota for user
@@ -55,8 +80,19 @@ export class UsersService {
    * @param queryDto Query parameters
    * @returns Paginated users
    */
-  async findAll(queryDto: QueryUsersDto): Promise<{ users: User[]; total: number }> {
-    const { role, isActive, isVerified, page = 1, limit = 20, searchTerm, sortBy = 'createdAt', sortOrder = 'DESC' } = queryDto;
+  async findAll(
+    queryDto: QueryUsersDto,
+  ): Promise<{ users: User[]; total: number }> {
+    const {
+      role,
+      isActive,
+      isVerified,
+      page = 1,
+      limit = 20,
+      searchTerm,
+      sortBy = 'createdAt',
+      sortOrder = 'DESC',
+    } = queryDto;
 
     const queryBuilder = this.usersRepository.createQueryBuilder('user');
 
@@ -77,7 +113,7 @@ export class UsersService {
     if (searchTerm) {
       queryBuilder.andWhere(
         '(user.email ILIKE :search OR user.firstName ILIKE :search OR user.lastName ILIKE :search)',
-        { search: `%${searchTerm}%` }
+        { search: `%${searchTerm}%` },
       );
     }
 
@@ -101,7 +137,7 @@ export class UsersService {
   async findOne(id: string): Promise<User> {
     const user = await this.usersRepository.findOne({
       where: { id },
-      relations: ['subscriptions', 'clientOrders', 'tailorOrders']
+      relations: ['subscriptions', 'clientOrders', 'tailorOrders'],
     });
 
     if (!user) {
@@ -118,7 +154,7 @@ export class UsersService {
    */
   async findByEmail(email: string): Promise<User | null> {
     return this.usersRepository.findOne({
-      where: { email: email.toLowerCase() }
+      where: { email: email.toLowerCase() },
     });
   }
 
@@ -179,12 +215,15 @@ export class UsersService {
    * @param id User ID
    * @param updatePasswordDto Password update data
    */
-  async updatePassword(id: string, updatePasswordDto: UpdatePasswordDto): Promise<void> {
+  async updatePassword(
+    id: string,
+    updatePasswordDto: UpdatePasswordDto,
+  ): Promise<void> {
     const user = await this.findOne(id);
-    
+
     const isPasswordValid = await this.verifyPassword(
       updatePasswordDto.currentPassword,
-      user.password
+      user.password,
     );
 
     if (!isPasswordValid) {
@@ -203,10 +242,19 @@ export class UsersService {
    */
   async updateEmail(id: string, updateEmailDto: UpdateEmailDto): Promise<User> {
     const user = await this.findOne(id);
-    
+
+    // Add validation for currentPassword and newEmail
+    if (!updateEmailDto.currentPassword) {
+      throw new BadRequestException('Current password is required');
+    }
+
+    if (!updateEmailDto.newEmail) {
+      throw new BadRequestException('New email is required');
+    }
+
     const isPasswordValid = await this.verifyPassword(
       updateEmailDto.currentPassword,
-      user.password
+      user.password,
     );
 
     if (!isPasswordValid) {
@@ -220,10 +268,10 @@ export class UsersService {
 
     user.email = updateEmailDto.newEmail;
     user.emailVerified = false;
-    
+
     // Generate new verification token
     user.emailVerificationToken = this.generateVerificationToken();
-    
+
     const savedUser = await this.usersRepository.save(user);
 
     // Send verification email
@@ -239,16 +287,16 @@ export class UsersService {
    * @returns Updated user
    */
   async updatePreferences(
-    id: string, 
-    preferences: Partial<UserPreferencesDto>
+    id: string,
+    preferences: Partial<UserPreferencesDto>,
   ): Promise<User> {
     const user = await this.findOne(id);
-    
+
     user.preferences = {
       ...user.preferences,
-      ...preferences
+      ...preferences,
     };
-    
+
     return this.usersRepository.save(user);
   }
 
@@ -269,7 +317,7 @@ export class UsersService {
    */
   async verifyEmail(token: string): Promise<User> {
     const user = await this.usersRepository.findOne({
-      where: { emailVerificationToken: token }
+      where: { emailVerificationToken: token },
     });
 
     if (!user) {
@@ -277,7 +325,7 @@ export class UsersService {
     }
 
     user.emailVerified = true;
-    user.emailVerificationToken = null;
+    user.emailVerificationToken = undefined;
 
     return this.usersRepository.save(user);
   }
@@ -307,7 +355,7 @@ export class UsersService {
    */
   async resetPassword(token: string, newPassword: string): Promise<void> {
     const user = await this.usersRepository.findOne({
-      where: { passwordResetToken: token }
+      where: { passwordResetToken: token },
     });
 
     if (!user || !user.isPasswordResetTokenValid()) {
@@ -315,8 +363,8 @@ export class UsersService {
     }
 
     user.password = await this.hashPassword(newPassword);
-    user.passwordResetToken = null;
-    user.passwordResetExpires = null;
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined; // Changed from null to undefined
 
     await this.usersRepository.save(user);
   }
@@ -329,14 +377,14 @@ export class UsersService {
    */
   async updateRole(id: string, role: UserRole): Promise<User> {
     const user = await this.findOne(id);
-    
+
     user.role = role;
-    
+
     if (role === UserRole.TAILOR && !user.stripeConnectAccountId) {
       // Handle Stripe Connect account creation for new tailors
       await this.setupTailorStripeAccount(user);
     }
-    
+
     return this.usersRepository.save(user);
   }
 
@@ -349,6 +397,16 @@ export class UsersService {
     const user = await this.findOne(id);
     user.lastLoginAt = new Date();
     return this.usersRepository.save(user);
+  }
+
+  /**
+   * Update last login time for user
+   * @param userId User ID
+   */
+  async updateLastLogin(userId: string): Promise<void> {
+    await this.usersRepository.update(userId, {
+      lastLoginAt: new Date(),
+    });
   }
 
   /**
@@ -380,7 +438,10 @@ export class UsersService {
    * @param password Plain password
    * @returns Hashed password
    */
-  private async hashPassword(password: string): Promise<string> {
+  private async hashPassword(password: string | undefined): Promise<string> {
+    if (!password) {
+      throw new BadRequestException('Password is required');
+    }
     return bcrypt.hash(password, 10);
   }
 
@@ -390,7 +451,13 @@ export class UsersService {
    * @param hash Password hash
    * @returns Whether password matches
    */
-  private async verifyPassword(password: string, hash: string): Promise<boolean> {
+  private async verifyPassword(
+    password: string,
+    hash: string | undefined,
+  ): Promise<boolean> {
+    if (!hash) {
+      return false;
+    }
     return bcrypt.compare(password, hash);
   }
 
@@ -434,6 +501,8 @@ export class UsersService {
    */
   private async setupTailorStripeAccount(user: User): Promise<void> {
     // Implement Stripe Connect account creation
-    this.logger.debug(`Setting up Stripe Connect account for tailor ${user.id}`);
+    this.logger.debug(
+      `Setting up Stripe Connect account for tailor ${user.id}`,
+    );
   }
 }

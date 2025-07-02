@@ -1,5 +1,4 @@
-import { IsBoolean, IsOptional, IsString, IsIn } from 'class-validator';
-import { ApiPropertyOptional } from '@nestjs/swagger';
+// Import removed as it's not currently being used
 
 export interface NotificationPreferences {
   email?: boolean;
@@ -33,5 +32,5 @@ export const DEFAULT_PREFERENCES: UserPreferencesDefaults = {
   distanceUnit: 'miles',
   showHelp: true,
   desktopNotifications: false,
-  calendarView: 'week'
+  calendarView: 'week',
 };

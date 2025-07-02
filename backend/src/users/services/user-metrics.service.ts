@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, MoreThanOrEqual } from 'typeorm';
 import { User, UserRole } from '../entities/user.entity';
 import { StorageQuota } from '../../upload/entities/storage-quota.entity';
 
@@ -81,13 +81,13 @@ export class UserMetricsService {
 
       const [dailyActive, weeklyActive, monthlyActive] = await Promise.all([
         this.userRepository.count({
-          where: { lastLoginAt: { $gte: dayAgo } },
+          where: { lastLoginAt: MoreThanOrEqual(dayAgo) },
         }),
         this.userRepository.count({
-          where: { lastLoginAt: { $gte: weekAgo } },
+          where: { lastLoginAt: MoreThanOrEqual(weekAgo) },
         }),
         this.userRepository.count({
-          where: { lastLoginAt: { $gte: monthAgo } },
+          where: { lastLoginAt: MoreThanOrEqual(monthAgo) },
         }),
       ]);
 

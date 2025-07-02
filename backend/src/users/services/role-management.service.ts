@@ -65,8 +65,7 @@ export class RoleManagementService {
     // Verify any subscription requirements
     const hasRequiredSubscription = user.subscriptions?.some(
       (sub) =>
-        sub.status === 'active' &&
-        ['pro', 'business'].includes(sub.stripePriceId),
+        sub.status === 'active' && ['pro', 'business'].includes(sub.planId),
     );
 
     if (!hasRequiredSubscription) {

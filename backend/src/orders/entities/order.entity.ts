@@ -1,23 +1,36 @@
 // /backend/src/orders/entities/order.entity.ts
-import { Entity, Column, ManyToOne, OneToMany } from 'typeorm';
+import {
+  Entity,
+  Column,
+  PrimaryGeneratedColumn,
+  ManyToOne,
+  OneToMany,
+  JoinColumn,
+  CreateDateColumn,
+  UpdateDateColumn,
+} from 'typeorm';
+import { OrderItem } from './order-item.entity';
 import { User } from '../../users/entities/user.entity';
 import { Payment } from '../../payments/entities/payment.entity';
 import { File } from '../../upload/entities/file.entity';
-import { BaseEntity } from '../../common/base.entity';
+import { BaseEntity } from '../../common/entities/base.entity';
 
 export enum OrderStatus {
-  DRAFT = 'draft',
-  PENDING_PAYMENT = 'pending_payment',
-  PAYMENT_FAILED = 'payment_failed',
-  CONFIRMED = 'confirmed',
-  IN_PROGRESS = 'in_progress',
-  READY_FOR_FITTING = 'ready_for_fitting',
-  COMPLETED = 'completed',
-  CANCELLED = 'cancelled',
+  DRAFT = 'DRAFT',
+  PENDING = 'PENDING',
+  PROCESSING = 'PROCESSING',
+  CONFIRMED = 'CONFIRMED', // Payment confirmed status
+  PAYMENT_FAILED = 'PAYMENT_FAILED', // Payment failed status
+  COMPLETED = 'COMPLETED',
+  CANCELLED = 'CANCELLED',
+  RETURNED = 'RETURNED',
+  PENDING_PAYMENT = 'PENDING_PAYMENT',
 }
 
 export enum PaymentStatus {
   PENDING = 'pending',
+  PENDING_PAYMENT = 'pending_payment',
+  PAYMENT_FAILED = 'payment_failed',
   PROCESSING = 'processing',
   COMPLETED = 'completed',
   FAILED = 'failed',
@@ -26,11 +39,22 @@ export enum PaymentStatus {
 
 @Entity('orders')
 export class Order extends BaseEntity {
-  @ManyToOne(() => User, (user) => user.clientOrders, { nullable: false })
-  client!: User;
+  @PrimaryGeneratedColumn('uuid')
+  declare id: string;
 
-  @ManyToOne(() => User, (user) => user.tailorOrders, { nullable: false })
-  tailor!: User;
+  @Column()
+  clientId: string;
+
+  @ManyToOne(() => User)
+  @JoinColumn({ name: 'clientId' })
+  client: User;
+
+  @Column({ nullable: true })
+  tailorId: string;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'tailorId' })
+  tailor: User;
 
   @Column('enum', { enum: OrderStatus, default: OrderStatus.DRAFT })
   status: OrderStatus = OrderStatus.DRAFT;
@@ -66,16 +90,44 @@ export class Order extends BaseEntity {
   }>;
 
   @OneToMany(() => Payment, (payment) => payment.order)
-  payments!: Payment[];
+  payments: Payment[];
 
   @OneToMany(() => File, (file) => file.order)
   attachments!: File[];
 
+  @OneToMany(() => OrderItem, (orderItem) => orderItem.order, {
+    cascade: true,
+    eager: true,
+  })
+  items: OrderItem[];
+
+  @Column('decimal', { precision: 10, scale: 2 })
+  totalAmount: number;
+
+  @CreateDateColumn()
+  declare createdAt: Date;
+
+  @UpdateDateColumn()
+  declare updatedAt: Date;
+
   @Column('jsonb', { nullable: true })
   metadata: Record<string, any> = {};
+
+  @Column({ nullable: true })
+  cancellationReason?: string;
+
+  @Column({ type: 'timestamp', nullable: true })
+  cancelledAt?: Date;
+
+  @Column({ nullable: true })
+  cancelledBy?: string;
 
   constructor(partial: Partial<Order>) {
     super();
     Object.assign(this, partial);
+  }
+
+  get itemCount(): number {
+    return this.items ? this.items.length : 0;
   }
 }

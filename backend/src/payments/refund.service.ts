@@ -1,9 +1,15 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
-import { Payment, PaymentStatus } from './entities/payment.entity';
+import { Payment } from './entities/payment.entity';
+import { PaymentStatus } from './enums/payment-status.enum'; // Correct path to your enum
 import { EmailService } from '../email/email.service';
 import { OrdersService } from '../orders/orders.service';
 import { OrderStatus } from '../orders/entities/order.entity';
@@ -30,9 +36,9 @@ export class RefundService {
     if (!stripeKey) {
       throw new Error('STRIPE_SECRET_KEY is not configured');
     }
-    
+
     this.stripe = new Stripe(stripeKey, {
-      apiVersion: '2024-12-18.acacia',
+      apiVersion: '2025-02-24.acacia', // Match the expected version
       typescript: true,
     });
   }
@@ -63,29 +69,40 @@ export class RefundService {
     }
 
     try {
-      // Calculate refund amount (full refund if not specified)
-      const amountToRefund = options.amount !== undefined
-        ? Math.round(options.amount * 100)
-        : undefined;
+      // Validate that we have a payment intent ID
+      if (!payment.stripePaymentIntentId) {
+        throw new BadRequestException(
+          'Cannot refund payment without a Stripe payment intent ID',
+        );
+      }
+
+      // Use a non-null assertion or type assertion
+      const paymentIntentId = payment.stripePaymentIntentId as string;
 
       // Process refund in Stripe
-      const refund = await this.stripe.refunds.create({
-        payment_intent: payment.stripePaymentIntentId,
-        amount: amountToRefund,
-        reason: options.reason,
+      const refundParams: Stripe.RefundCreateParams = {
+        payment_intent: paymentIntentId,
+        reason: options.reason as Stripe.RefundCreateParams.Reason,
         metadata: {
           ...options.metadata,
-          orderId: payment.order?.id,
+          orderId: payment.order?.id ? String(payment.order.id) : null, // Convert to string or null
           refundRequestedAt: new Date().toISOString(),
         },
-      });
+      };
+
+      // Only include amount if it's specified (for partial refunds)
+      if (options.amount !== undefined) {
+        refundParams.amount = Math.round(options.amount * 100);
+      }
+
+      const refund = await this.stripe.refunds.create(refundParams);
 
       // Update payment record
       payment.status = PaymentStatus.REFUNDED;
       payment.metadata = {
         ...payment.metadata,
         refundId: refund.id,
-        refundAmount: (refund.amount / 100) || payment.amount,
+        refundAmount: refund.amount / 100 || payment.amount,
         refundReason: options.reason,
         refundDate: new Date().toISOString(),
         ...options.metadata,
@@ -95,38 +112,36 @@ export class RefundService {
 
       // Update order status if needed
       if (payment.order) {
-        await this.ordersService.updateStatus(
-          payment.order.id,
-          {
-            status: OrderStatus.CANCELLED,
-            notes: `Order refunded: ${options.reason || 'Customer request'}`
-          },
-        );
+        await this.ordersService.updateStatus(payment.order.id, {
+          status: OrderStatus.CANCELLED,
+          notes: `Order refunded: ${options.reason || 'Customer request'}`,
+        });
       }
 
       // Send refund notification email
       if (payment.order?.client?.email) {
-        await this.sendRefundNotification(
-          payment.order.client.email,
-          {
-            orderId: payment.order.id,
-            amount: (refund.amount / 100) || payment.amount,
-            reason: options.reason,
-          }
-        );
+        await this.sendRefundNotification(payment.order.client.email, {
+          orderId: payment.order.id,
+          // Handle undefined amounts properly:
+          amount:
+            refund.amount !== undefined
+              ? refund.amount / 100
+              : payment.amount || 0,
+          reason: options.reason,
+        });
       }
 
       return payment;
     } catch (error) {
       this.logger.error(
         `Failed to process refund: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        error instanceof Error ? error.stack : undefined
+        error instanceof Error ? error.stack : undefined,
       );
-      
+
       if (error instanceof Stripe.errors.StripeError) {
         throw new BadRequestException(`Stripe error: ${error.message}`);
       }
-      
+
       throw error;
     }
   }
@@ -143,11 +158,11 @@ export class RefundService {
       this.logger.error(
         `Failed to retrieve refund details: ${error instanceof Error ? error.message : 'Unknown error'}`,
       );
-      
+
       if (error instanceof Stripe.errors.StripeError) {
         throw new BadRequestException(`Stripe error: ${error.message}`);
       }
-      
+
       throw error;
     }
   }
@@ -157,23 +172,25 @@ export class RefundService {
    * @param paymentIntentId Stripe payment intent ID
    * @returns List of refunds from Stripe
    */
-  async getRefundsForPayment(paymentIntentId: string): Promise<Stripe.Refund[]> {
+  async getRefundsForPayment(
+    paymentIntentId: string,
+  ): Promise<Stripe.Refund[]> {
     try {
       const refunds = await this.stripe.refunds.list({
         payment_intent: paymentIntentId,
         limit: 100,
       });
-      
+
       return refunds.data;
     } catch (error) {
       this.logger.error(
         `Failed to retrieve refunds for payment: ${error instanceof Error ? error.message : 'Unknown error'}`,
       );
-      
+
       if (error instanceof Stripe.errors.StripeError) {
         throw new BadRequestException(`Stripe error: ${error.message}`);
       }
-      
+
       throw error;
     }
   }
@@ -189,7 +206,7 @@ export class RefundService {
       orderId: string;
       amount: number;
       reason?: string;
-    }
+    },
   ): Promise<void> {
     try {
       await this.emailService.sendEmail({
@@ -268,7 +285,7 @@ Thank you for your business.
    */
   async updateRefundMetadata(
     refundId: string,
-    metadata: Record<string, string>
+    metadata: Record<string, string>,
   ): Promise<void> {
     try {
       await this.stripe.refunds.update(refundId, { metadata });
@@ -289,6 +306,14 @@ Thank you for your business.
     canRefund: boolean;
     maxAmount?: number;
     reason?: string;
+    currency?: string;
+    paymentDetails?: {
+      id: string;
+      amount: number;
+      currency: string;
+      createdAt: Date;
+      description?: string;
+    };
   }> {
     const payment = await this.paymentRepository.findOne({
       where: { id: paymentId },
@@ -307,13 +332,117 @@ Thank you for your business.
       };
     }
 
+    // Check if payment has a Stripe payment intent ID
+    if (!payment.stripePaymentIntentId) {
+      return {
+        canRefund: false,
+        reason: 'Payment has no associated Stripe payment intent',
+      };
+    }
+
     // Check if already partially refunded
     try {
-      const existingRefunds = await this.getRefundsForPayment(payment.stripePaymentIntentId);
-      const totalRefunded = existingRefunds.reduce(
-        (sum, refund) => sum + refund.amount,
-        0
-      ) / 100; // Convert from cents
+      const existingRefunds = await this.getRefundsForPayment(
+        payment.stripePaymentIntentId,
+      );
+
+      const totalRefunded =
+        existingRefunds.reduce((sum, refund) => sum + (refund.amount ?? 0), 0) /
+        100; // Convert from cents
+
+      // Handle potentially undefined values
+      const paymentAmount = payment.amount ?? 0;
+      const paymentCurrency = payment.currency ?? 'USD'; // Provide default currency
+
+      if (totalRefunded >= paymentAmount) {
+        return {
+          canRefund: false,
+          reason: 'Payment has already been fully refunded',
+        };
+      }
+
+      const remainingAmount = paymentAmount - totalRefunded;
+
+      return {
+        canRefund: true,
+        maxAmount: remainingAmount,
+        currency: paymentCurrency,
+        paymentDetails: {
+          id: payment.id,
+          amount: paymentAmount,
+          currency: paymentCurrency,
+          createdAt: payment.createdAt,
+          // No description field
+        },
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Error checking refund status: ${errorMessage}`);
+
+      return {
+        canRefund: false,
+        reason: 'Error checking refund status',
+      };
+    }
+  }
+
+  /**
+   * Check refund status for a payment
+   * @param paymentId Payment ID
+   * @returns Object indicating refund status and any issues
+   */
+  async checkRefundStatus(paymentId: string): Promise<{
+    canRefund: boolean;
+    reason?: string;
+    maxAmount?: number; // Add this to the return type
+  }> {
+    try {
+      const payment = await this.paymentRepository.findOne({
+        where: { id: paymentId },
+      });
+
+      if (!payment) {
+        return {
+          canRefund: false,
+          reason: 'Payment not found',
+        };
+      }
+
+      if (payment.status !== PaymentStatus.COMPLETED) {
+        return {
+          canRefund: false,
+          reason: `Cannot refund payment with status: ${payment.status}`,
+        };
+      }
+
+      // Handle missing amount explicitly
+      if (payment.amount === undefined || payment.amount === null) {
+        this.logger.warn(`Payment ${payment.id} has no valid amount`);
+        return {
+          canRefund: false,
+          reason: 'Payment has no valid amount to refund',
+        };
+      }
+
+      // Check for missing payment intent ID
+      if (!payment.stripePaymentIntentId) {
+        this.logger.warn(
+          `Payment ${payment.id} has no Stripe payment intent ID`,
+        );
+        return {
+          canRefund: false,
+          reason: 'Payment has no associated Stripe payment intent',
+        };
+      }
+
+      const existingRefunds = await this.getRefundsForPayment(
+        payment.stripePaymentIntentId,
+      );
+
+      const totalRefunded =
+        existingRefunds.reduce((sum, refund) => sum + (refund.amount ?? 0), 0) /
+        100;
 
       if (totalRefunded >= payment.amount) {
         return {
@@ -322,20 +451,19 @@ Thank you for your business.
         };
       }
 
-      const remainingAmount = payment.amount - totalRefunded;
-
+      // Now you can include maxAmount in the return object
       return {
         canRefund: true,
-        maxAmount: remainingAmount,
+        maxAmount: payment.amount - totalRefunded, // Add the max amount that can be refunded
       };
     } catch (error) {
       this.logger.error(
-        `Failed to check refund eligibility: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Error checking refund status: ${error instanceof Error ? error.message : String(error)}`,
       );
-      
+
       return {
         canRefund: false,
-        reason: 'Failed to verify refund eligibility with payment processor',
+        reason: 'An error occurred while checking refund status',
       };
     }
   }

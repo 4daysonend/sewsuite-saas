@@ -1,53 +1,63 @@
-import { IsEmail, IsString, IsEnum, IsOptional, MinLength, IsPhoneNumber, ValidateNested } from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsEmail,
+  IsString,
+  IsOptional,
+  IsEnum,
+  IsBoolean,
+  ValidateNested,
+  IsObject,
+} from 'class-validator';
 import { Type } from 'class-transformer';
-import { UserRole } from '../entities/user.entity';
+import { UserRole } from '../enums/user-role.enum';
 import { UserPreferencesDto } from './user-preferences.dto';
 
 export class CreateUserDto {
-  @ApiProperty({ example: 'user@example.com' })
-  @IsEmail({}, { message: 'Please provide a valid email address' })
+  @IsEmail()
   email: string;
 
-  @ApiProperty()
   @IsString()
-  @MinLength(8)
-  @Matches(
-    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/,
-    {
-      message: 'Password must contain uppercase, lowercase, number and special character'
-    }
-  )
-  password: string;
+  @IsOptional()
+  password?: string;
 
-  @ApiPropertyOptional()
   @IsString()
   @IsOptional()
   firstName?: string;
 
-  @ApiPropertyOptional()
   @IsString()
   @IsOptional()
   lastName?: string;
 
-  @ApiPropertyOptional()
-  @IsPhoneNumber()
-  @IsOptional()
-  phoneNumber?: string;
-
-  @ApiPropertyOptional()
   @IsString()
   @IsOptional()
-  address?: string;
+  profilePicture?: string;
 
-  @ApiPropertyOptional({ enum: UserRole })
   @IsEnum(UserRole)
   @IsOptional()
-  role?: UserRole = UserRole.CLIENT;
+  role?: UserRole;
 
-  @ApiPropertyOptional({ type: () => UserPreferencesDto })
+  @IsString()
+  @IsOptional()
+  googleId?: string;
+
+  @IsString()
+  @IsOptional()
+  oauthProvider?: string;
+
+  @IsString()
+  @IsOptional()
+  oauthProviderId?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  isVerified?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  emailVerified?: boolean;
+
+  @IsObject()
+  @IsOptional()
   @ValidateNested()
   @Type(() => UserPreferencesDto)
-  @IsOptional()
   preferences?: UserPreferencesDto;
 }
